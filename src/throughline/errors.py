@@ -72,6 +72,23 @@ class QuotaExceeded(ThroughlineError):
         self.scope = scope
 
 
+class PolicyError(ThroughlineError):
+    """A policy rule denied the run (raised when on_deny="raise").
+
+    Attributes:
+        checkpoint: where the deny fired ("ingress", "egress", "step:<name>").
+        rule:       name of the denying rule.
+        reason:     the rule's human-readable reason.
+    """
+
+    def __init__(self, message: str, *, checkpoint: str = "", rule: str = "",
+                 reason: str = ""):
+        super().__init__(message)
+        self.checkpoint = checkpoint
+        self.rule = rule
+        self.reason = reason
+
+
 class ValidationError(ThroughlineError):
     """A validator rejected a payload.
 

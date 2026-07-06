@@ -27,8 +27,8 @@ Quickstart:
 
 from .context import EventBus, Result, RunContext
 from .errors import (ArtifactExpired, EarlyReturn, FlowError, ThroughlineError,
-                     PresetError, QuotaExceeded, RegistryError, StoreError,
-                     ValidationError, WrapError)
+                     PolicyError, PresetError, QuotaExceeded, RegistryError,
+                     StoreError, ValidationError, WrapError)
 from .flow import Flow
 from .middleware import Handled, Middleware
 from .presets import build_flow, find_preset, list_presets, load_preset, load_preset_config
@@ -53,7 +53,7 @@ __all__ = [
     "load_preset", "load_preset_config", "build_flow", "list_presets", "find_preset",
     "ThroughlineError", "FlowError", "ValidationError", "RegistryError", "PresetError",
     "WrapError", "StoreError", "ArtifactExpired",
-    "EarlyReturn", "QuotaExceeded",
+    "EarlyReturn", "QuotaExceeded", "PolicyError",
     "adapters", "modules",
     "__version__",
 ]

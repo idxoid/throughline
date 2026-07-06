@@ -101,6 +101,7 @@ _BUILTIN_MIDDLEWARE = {
     "retry": "throughline.modules.retry:Retry",
     "cache": "throughline.modules.cache:Cache",
     "quota": "throughline.modules.quota:Quota",
+    "policy": "throughline.modules.policy:Policy",
 }
 
 _STEP_FORMS = ("uses", "map", "parallel", "branch")

@@ -18,7 +18,7 @@ pip install throughline[anthropic] # + Claude adapter
 |----------------|------------|
 | **Step**       | anything callable (or wrappable) that transforms a payload |
 | **Flow**       | an ordered chain of steps |
-| **Middleware** | pluggable layers around every step: validation, metrics, observability, lineage, retry, cache, quota, your own |
+| **Middleware** | pluggable layers around every step: validation, metrics, observability, lineage, retry, cache, quota, policy, your own |
 | **Preset**     | a TOML file describing steps + middleware + config; supports `extends` |
 | **Context**    | carried through the run; collects events, metrics and artifacts |
 
@@ -81,6 +81,29 @@ $ throughline components                             # typed catalog: kind, sour
 $ throughline mcp --preset demo                      # optional contrib: serve flows as MCP tools
 ```
 
+## Hero walkthrough: debug a bad RAG answer
+
+The fastest way to see the point: one offline run over a fully-cited answer
+that catches the two lines a human would have missed — a *fabrication* and a
+*contradiction*, both wearing real citations.
+
+```console
+$ PYTHONPATH=src python3 examples/debug_bad_rag.py
+```
+
+```
+  ok L1 [e1] conf=1.00  Internal chat logs are retained for 90 days, then purged automatically.
+  ok L2 [e2] conf=1.00  They may be used for internal analytics dashboards.
+  ?? L3 [e1] conf=0.14  Deleted logs are also archived to cold storage for one year.
+  !! L4 [e3] conf=0.90  Logs can be used to train machine learning models after anonymization.
+```
+
+L3 cites the retention chunk, which never mentions backups (**unsupported**);
+L4 cites the chunk that *forbids* training on logs (**contradicted**). A
+citation-count check ships this answer; throughline flags it — with evidence,
+citations, verdicts, metrics and line-level lineage in a single run. The full
+annotated walkthrough is in **[examples/README.md](examples/README.md)**.
+
 ## Example presets
 
 These examples are the fastest way to see what the control plane is for:
@@ -91,6 +114,7 @@ These examples are the fastest way to see what the control plane is for:
 | `report-gen` | Artifact-backed report generation | slots, map steps, report lineage, artifact refs |
 | `data-qa` | Data quality assistant | deterministic checks, step validation, strict report schema |
 | `doc-extract` | Document extraction pipeline | parser slot, page map, retryable structured extraction |
+| `support-agent` | Guarded support bot | policy layer: ingress screening, egress PII redaction, graceful deny, audit |
 | `surgical_context` | Code intelligence / change impact | file:line citations, code QA, real integration |
 
 ```bash
@@ -100,7 +124,7 @@ THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. \
 python3 -m throughline run rag-docs -i "how should answers cite docs?" --json --blame
 ```
 
-The first four presets are runnable offline from this repository. The
+All presets except the last are runnable offline from this repository. The
 `surgical_context` example is a live integration under
 [`examples/surgical_context/`](examples/surgical_context/) and needs its own
 external services.
@@ -501,9 +525,9 @@ on_exceed = "return"
 ```
 
 Recommended stack order: **observers first** (`Observe`,
-`MetricsMiddleware`), then `Cache`, then everything else. The first
-middleware is the outermost layer, and a run-level cache hit short-circuits
-everything inside it — with `Cache` outermost the hit would be an invisible
+`MetricsMiddleware`), then `Policy`, then `Cache`, then everything else. The
+first middleware is the outermost layer, and a run-level cache hit
+short-circuits everything inside it — with `Cache` outermost the hit would be an invisible
 run (no metric, no event). The full reasoning is in ARCHITECTURE.
 
 ## Artifact store: control plane vs data plane
@@ -585,15 +609,66 @@ it, else text — lands at `out_key`, post-processed by `unwrap=`. In presets,
 `mcp_tool` owns its client: `uses = "throughline.adapters.mcp:mcp_tool"` with
 `command = [...]` and `tool = "..."` in `[steps.with]`.
 
-## Reserved boundary: policy / security (future)
+## Policy: screening, redaction, audit
 
-Not implemented in v1, but the boundary is pinned now (see ARCHITECTURE):
-authz for MCP tool calls, PII redaction, egress rules and prompt-injection
-screening belong to a **policy layer** — a middleware sitting *outside*
-`Cache`, so a cached hit passes the same checks as a fresh answer. The bare
-kind name `policy` is reserved in the registry (custom kinds must be
-namespaced, so no plugin can squat it); ecosystem experiments live as
-`yourpkg.policy` and can migrate later without collisions.
+The formerly reserved policy/security boundary is now a protocol. A rule is
+the `kind="policy"` component — `(checkpoint, value, ctx) -> verdict`, where
+the verdict is `None` (abstain), `Allow`, `Deny`, `Transform` (redaction) or
+`Flag` (record, don't block):
+
+```python
+from throughline.modules import Policy, Deny, Transform, screen_with
+
+def redact_emails(checkpoint, value, ctx):
+    text, n = EMAIL_RE.subn("[redacted]", value["answer"])
+    return Transform({**value, "answer": text}, f"{n} emails") if n else None
+
+flow = tl.Flow(
+    [retrieve, prompt, llm],
+    middleware=[
+        Observe(), MetricsMiddleware(),       # observers: a deny must be visible
+        Policy(
+            ingress=[screen_with(judge)],     # any kind="verifier" as a rule
+            egress=[redact_emails],
+            on_deny="return",                 # or "raise" -> PolicyError
+            fallback={"answer": "handing you to an operator"},
+        ),
+        Cache(ttl=600),                       # inside Policy — see below
+    ],
+)
+```
+
+- **Abstain ≠ allow.** What silence means is checkpoint config, not rule
+  discipline: `default="allow"` (fail-open screening) or `default="deny"`
+  (fail-closed authz — some rule must return an explicit `Allow`). A
+  forgotten `return` in a rule can neither block traffic nor open a hole.
+  Deny always wins over an earlier Allow; need both postures, stack two
+  instances (the Quota pattern).
+- **Position is pinned by tests**: Observe/Metrics → Policy → Cache. Egress
+  runs in the `on_run_end` finalizer sweep, so **a cache hit passes the same
+  redaction as a fresh answer**; a denied request fails before `on_run_end`,
+  so **nothing denied is ever cached**. One hazard is documented: `Transform`
+  on *ingress* feeds the cache key — strip identifying fields on egress, not
+  ingress, or keep them in `key=`.
+- **Audit is data**: every decision is an event (`policy_denied` /
+  `policy_redacted` / `policy_flagged` / `policy_allowed`), a counter and a
+  record in `ctx.artifacts["policy"]` — reasons only, never payloads.
+- **Honest injection screening**: no regex pretending to detect prompt
+  injection. `screen_with(verifier)` adapts an LLM/NLI judge
+  (`kind="verifier"`) into a rule — it costs tokens, goes through Quota and
+  is cacheable.
+
+```toml
+[middleware.policy]
+ingress = ["my_pkg.rules:screen_injection"]
+egress = ["my_pkg.rules:redact_emails"]
+on_deny = "return"
+fallback = { answer = "I can't help with that — connecting you with an operator." }
+```
+
+The `support-agent` example preset is the live showcase; phase 2 (per-step
+checkpoints, MCP `tools/call` authz, event redaction in Observe sinks) is
+pinned in ARCHITECTURE's reserved boundaries.
 
 ## Composites & custom middleware
 

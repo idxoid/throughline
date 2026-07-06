@@ -1,0 +1,38 @@
+# Example support-bot preset with the policy layer: ingress screening,
+# egress PII redaction, graceful deny and an audit ledger.
+# Run from the repository root:
+#   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run support-agent -i "how do I reset my password?" --json
+name = "support-agent"
+description = "Support bot guarded by the policy layer: screen -> answer -> redact."
+
+[[steps]]
+uses = "examples.support_agent:normalize"
+name = "normalize"
+effects = "pure"
+
+[[steps]]
+uses = "examples.support_agent:answer"
+name = "answer"
+effects = "pure"
+
+# Table order is the middleware order: observers outside Policy (a deny must
+# be visible in metrics and events), Policy outside Cache (a cache hit must
+# pass the same egress checks as a fresh answer).
+[middleware.observe]
+
+[middleware.metrics]
+
+[middleware.policy]
+ingress = ["examples.support_agent:screen_injection"]
+egress = ["examples.support_agent:redact_email_addresses"]
+on_deny = "return"
+fallback = { answer = "I can't help with that — connecting you with a human operator." }
+
+[middleware.cache]
+key = "question"
+ttl = 600
+
+[middleware.quota]
+scope = "run"
+[middleware.quota.limits]
+"llm.calls" = 3

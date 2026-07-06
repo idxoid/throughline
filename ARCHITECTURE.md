@@ -45,6 +45,7 @@ modules │  metrics     counters + observations, per-step timings           │
         │  retry       backoff, fnmatch scoping by step name               │
         │  cache       LRU+TTL / semantic, run|step, purity guard          │
         │  quota       budgets: counters/cost/seconds/steps, scope=run|global │
+        │  policy      ingress/egress rules: verdicts, redaction, audit    │
         │  debug       Snapshots (opt-in history), StrictOutputs           │
         ├───────────────────────────────────────────────────────────────────
 adapters│  wrap()      duck typing + explain()/WrapError with a trace      │
@@ -83,10 +84,13 @@ hooks of every middleware to its right in the list; if Cache were outermost,
 a hit would fire before Observe subscribed its sinks and Metrics attached
 its collector — and become invisible. Hence the recommended stack:
 Observe/Metrics → Cache → Quota/Retry/Validate/Lineage (a hit spends none of
-Quota's budget, yet shows up in metrics and events). `run_started` is
-emitted by the core after the `on_run_start` hooks — so that Observe's
-subscribers actually see it; a short-circuited run announces itself as
-`run_short_circuited` instead.
+Quota's budget, yet shows up in metrics and events). With the policy layer
+the pinned order is **Observe/Metrics → Policy → Cache → the rest**:
+observers outside Policy so a deny is visible in metrics and events, Policy
+outside Cache so a hit passes the same checks as a fresh answer (see the
+Policy section). `run_started` is emitted by the core after the
+`on_run_start` hooks — so that Observe's subscribers actually see it; a
+short-circuited run announces itself as `run_short_circuited` instead.
 
 ### The EarlyReturn / on_run_end contract (formal)
 Pinned down in the docstrings of Flow.run / Middleware / EarlyReturn and in
@@ -131,6 +135,63 @@ Quota instances in the stack: scope composes like everything else instead of
 turning into a parameter matrix inside one middleware. `QuotaExceeded` and
 the `quota_exceeded`/`quota_warning` events carry `scope` — alerts can tell
 "an expensive request" from "the daily budget ran out".
+
+### Policy: verdicts with an explicit posture, audit as data
+The reserved policy/security boundary is now a protocol. A rule is the
+`kind="policy"` component — `callable (checkpoint, value, ctx) -> verdict`,
+where the verdict is `None` (abstain), `Allow(reason)`, `Deny(reason)`,
+`Transform(value, reason)` (redaction) or `Flag(reason)` (record, don't
+block). The load-bearing decision: **abstain ≠ allow as a property of the
+rule**; what silence means is configuration of the *checkpoint* —
+`default="allow"` for screening (fail-open), `default="deny"` for authz
+(fail-closed: at least one rule must return an explicit `Allow`). A
+forgotten `return` in a rule can thus neither block traffic nor silently
+open a hole — the fix lives in the protocol, not in code review. Deny
+always wins: rules run in order, an `Allow` is recorded and evaluation
+continues, so a later `Deny` still blocks. Mixed postures (fail-open
+screening + fail-closed authz) are two stacked Policy instances — the Quota
+scope pattern.
+
+Phase-1 checkpoints are `ingress` (`on_run_start`) and `egress`
+(`on_run_end`). Both ordering pins from the reserved-boundary era hold by
+the existing core contract and are frozen in tests/test_policy.py:
+
+- **A cache hit passes egress.** `on_run_end` is a finalizer sweep, so
+  Policy's egress runs even when a run-level Cache short-circuits the flow
+  — the classic "cached answer served without redaction" hole is closed by
+  the same mechanism that makes the sweep run at all.
+- **A denied request caches nothing.** PolicyError from `on_run_start` is a
+  real failure: no `on_run_end` hooks run, Cache never stores.
+
+Two deliberate consequences, pinned rather than discovered later. First,
+`on_deny="raise"` at *egress* interrupts the finalizer sweep — outer
+middleware (Observe/Metrics) get no `on_run_end`; per-event sinks have
+already seen every policy event, but run-level finalization is lost.
+Second, `on_deny="return"` (the graceful mode: `fallback=` answers instead
+of a 500, the Quota pattern) works through different mechanics per
+checkpoint — ingress raises EarlyReturn (steps skipped, the fallback still
+passes egress), egress substitutes the hook's return value, because an
+EarlyReturn inside the sweep would be caught as a failure.
+
+Known composition hazard, documented not papered over: `Transform` on
+*ingress* feeds the transformed payload to the run-level Cache key. If the
+transform strips identifying fields, different users collapse into one
+cache entry. Redaction of identifying data belongs on egress (where it
+demonstrably composes with caching — the redactor runs on hits too), or
+the field must stay in the cache `key=`. Relatedly, blame and claims ledger
+text refer to the *pre-redaction* answer: egress rewrites the output after
+lineage recorded it — the `policy_redacted` event is the link between the
+ledgers' text and the final artifact.
+
+Audit is data, not logs: every non-abstain decision becomes an event
+(`policy_denied/redacted/flagged/allowed`), a counter and a record in
+`ctx.artifacts["policy"]` — the evidence/claims ledger pattern. Events
+carry rule + reason, never the payload (redacted data must not leak back
+through the audit trail). And honesty about prompt injection: no regex
+pretending to be a detector — the module ships the checkpoint plus
+`screen_with(verifier)`, an adapter that turns any `kind="verifier"` judge
+(LLM/NLI) into a rule; it costs tokens, goes through Quota and is cacheable
+like any verifier.
 
 ### Cache: purity guard — a cache hit skips side effects
 A hit skips the step (or the whole flow) entirely — a database write, an
@@ -363,39 +424,33 @@ deliberately out of v1: it doubles the surface, and fan-out is covered by
 
 ## Reserved boundaries (future)
 
-### Policy / security
-Not implemented in v1, but the boundary is pinned now so that the ecosystem
-does not have to be broken later. What belongs here: authz on tool
-invocation (who may call which flow through MCP `tools/call`), PII redaction
-in payloads and events, egress rules (what data may leave the perimeter),
-prompt-injection screening on input.
+### Policy phase 2
+Phase 1 (the Policy section above) shipped the protocol — the `policy`
+kind, the verdict vocabulary, the ingress/egress checkpoints — and removed
+the name from the reserve. What stays reserved, now *within* an existing
+protocol instead of an empty slot:
 
-What is fixed already today:
-
-- **The slot name.** The bare name `policy` is reserved in the registry:
-  custom kinds must be namespaced, so no plugin can squat `policy` before
-  the core defines its protocol. Ecosystem experiments live as `acme.policy`
-  and can migrate later without collisions.
-- **The position in the stack.** Policy sits *outside* Cache: a cache hit
-  must pass the same checks as a fresh answer (a cached response served
-  without authz/redaction is the classic hole). Relative to observers the
-  order depends on whether the logs themselves get redacted: policy outside
-  Observe = redaction is visible in events too; inside = events stay raw.
-  That is a decision for the future protocol; both positions are already
-  legal for middleware today.
-- **The mechanism.** Policy is middleware (on_run_start for input
-  screening, on_run_end for output redaction, wrap_step for per-step rules)
-  plus a hook in MCP `tools/call` for authz before the flow runs. No new
-  core primitives are required — the boundary already exists; only the name
-  and the position are reserved.
+- **Per-step checkpoints.** `step:<pattern>` rules (`wrap_step`, fnmatch
+  scoping as in Retry) — data leaving toward specific steps, e.g. egress
+  through an `mcp:*` tool step.
+- **MCP authz.** A rule evaluation in `tools/call` before the flow runs
+  (who may call which flow), generalizing the session guard already living
+  in `contrib/mcp.py` `get_artifact`. `default="deny"` + `Allow` exist for
+  exactly this posture.
+- **Event redaction.** Step events carry raw payload fields before egress
+  redaction runs. That hole is not closed by stack order — it belongs to an
+  event redactor option on Observe's sinks, not to the Policy middleware.
+- **Doctor awareness.** `doctor` should render installed rules per
+  checkpoint and warn when the pinned order is violated (Policy inside
+  Cache) — today the order in presets rests on TOML table order alone.
 
 ## Non-goals for v1
 A general-purpose DAG engine (composites cover 90%), state persistence
 (RunContext is ephemeral; only artifacts in the store persist), distributed
 execution, a UI. All of it can be layered on top without changing the core —
-events and artifacts are already structured. Policy/security — see
-"Reserved boundaries" above: a non-goal as an implementation, but the
-boundary is pinned.
+events and artifacts are already structured. The rest of the policy layer
+(per-step checkpoints, MCP authz, event redaction) — see "Reserved
+boundaries": the protocol exists, the remaining surface is pinned.
 
 ## Verification
 `tests/` — unit and integration tests on stdlib `unittest`

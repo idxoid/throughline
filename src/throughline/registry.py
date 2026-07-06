@@ -55,8 +55,9 @@ from .errors import RegistryError
 #: point of use, open at the point of definition.
 #:
 #: Bare names outside this tuple are rejected for custom kinds, which makes
-#: them reservable: "policy" is reserved for the future policy/security slot
-#: (authz, redaction, egress rules — see ARCHITECTURE, "future boundaries").
+#: them reservable: "policy" spent its first release reserved exactly this
+#: way, so no plugin could squat the name before the core defined its
+#: protocol (a policy rule: callable (checkpoint, value, ctx) -> verdict).
 #:
 #: "store" is deliberately an UMBRELLA kind: two distinct protocols hide
 #: behind one word — cache stores (get/set keyed by namespace+text) and
@@ -67,7 +68,7 @@ from .errors import RegistryError
 #: at the point of use either way. Namespaces of built-in kinds ("store.*",
 #: "step.*", ...) are reserved for the core — register_kind rejects them.
 KINDS = ("step", "middleware", "store", "store.cache", "store.artifact",
-         "embedder", "llm", "retriever", "sink", "verifier")
+         "embedder", "llm", "retriever", "sink", "verifier", "policy")
 
 _HOOKS = ("on_run_start", "on_step_start", "wrap_step",
           "on_step_end", "on_step_error", "on_run_end")
@@ -120,6 +121,7 @@ _KIND_CHECKS: dict[str, Callable[[Any], bool]] = {
     "retriever": _check_retriever,
     "sink": callable,
     "verifier": callable,
+    "policy": callable,
 }
 
 _KIND_SHAPES = {
@@ -138,6 +140,8 @@ _KIND_SHAPES = {
                  "instead of framework docs",
     "sink": "callable event -> None",
     "verifier": "callable (claim, evidence) -> score",
+    "policy": "callable (checkpoint, value, ctx) -> verdict "
+              "(None=abstain, Allow/Deny/Transform/Flag)",
 }
 
 
