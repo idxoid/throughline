@@ -105,6 +105,75 @@ extract = "answer"
 child steps replace parent steps wholesale. Custom middleware plugs in with
 `uses = "pkg.mod:Class"` inside its table.
 
+### Slots: presets with holes
+
+A reusable preset declares the components it *cannot* ship — your retriever,
+your LLM — as **slots**, and stays honestly abstract until they are filled:
+
+```toml
+[slots.retriever]
+kind = "step"                        # contract of whatever fills the hole
+description = "team-owned retriever"
+# default = "examples.rag_docs:retriever"   # optional: makes the slot optional
+
+[[steps]]
+uses = "@retriever"
+[steps.with]
+top_k = 4
+```
+
+`@name` works anywhere a component reference does — step/middleware `uses`,
+composite inner refs, and whole-string values inside `[steps.with]` or
+middleware options (the **resolved object** is substituted, so factories get
+live components; `@@x` escapes a literal `@`). Fills, in ascending
+precedence: the slot's `default` → the `[fill]` table (deep-merged through
+`extends`) → `load_preset("x", fill={...})` / `--fill` on the CLI:
+
+```toml
+extends = "rag-docs-abstract"          # team preset: plug the real component
+[fill]
+retriever = "acme.search:make_retriever"
+```
+
+```console
+$ throughline run rag-abstract -i "..." --fill retriever=acme.search:make_retriever
+$ throughline doctor rag-abstract      # slots section: filled by what — or missing
+```
+
+Building with an unfilled slot fails with the full shopping list (every
+missing slot, kind, description); `doctor` reports instead of failing. The
+slot's `kind` is checked against what actually ends up in the slot — after
+the factory call when the fill is used as a factory.
+
+### Composites in TOML
+
+The Python composites (`tl.map_step` / `parallel` / `branch`), declaratively —
+a `[[steps]]` entry takes exactly one of `uses`/`map`/`parallel`/`branch`:
+
+```toml
+[[steps]]
+map = "my_pkg.report:section_step"   # fan out over an iterable payload
+workers = 4
+[steps.with]                         # optional: the INNER factory's kwargs
+style = "brief"
+
+[[steps]]
+[steps.parallel]                     # same payload to every entry -> dict
+summary = "my_pkg:summarize"
+stats = "my_pkg:stats"
+
+[[steps]]
+[steps.branch]
+selector = "lang"                    # payload key; "pkg.mod:fn" (with ':') imports
+default = "my_pkg:en_step"
+[steps.branch.routes]
+ru = "my_pkg:ru_step"
+en = "my_pkg:en_step"
+```
+
+Inner refs (including `"@slot"`) are used directly — no per-route factory
+call; wrap factories in your own module.
+
 ## Onboarding third-party RAG / chains / agents
 
 `throughline.wrap(obj)` duck-types foreign objects — **no framework imports**,

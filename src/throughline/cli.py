@@ -39,8 +39,21 @@ def _read_input(args: argparse.Namespace):
     return text
 
 
+def _parse_fills(pairs: list[str] | None) -> dict | None:
+    if not pairs:
+        return None
+    fills: dict = {}
+    for pair in pairs:
+        name, sep, ref = pair.partition("=")
+        if not sep or not name or not ref:
+            raise ThroughlineError(
+                f"--fill expects name=ref (e.g. retriever=my_pkg.rag:make), got {pair!r}")
+        fills[name] = ref
+    return fills
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
-    flow = load_preset(args.preset)
+    flow = load_preset(args.preset, fill=_parse_fills(args.fill))
     ctx = None
     if args.events:  # subscribe the console before the run starts
         from .context import RunContext
@@ -125,11 +138,19 @@ def _cmd_components(_: argparse.Namespace) -> int:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    report = inspect_preset(args.preset)
+    report = inspect_preset(args.preset, fill=_parse_fills(args.fill))
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report["ok"] else 1
     print(f"preset {report['name']!r}")
+    for row in report.get("slots", []):
+        mark = {"ok": "+", "unreferenced": "-"}.get(row["status"], "!")
+        kind = f" kind={row['kind']}" if row.get("kind") else ""
+        fill = (f" <- {row['fill']} ({row['source']})" if row.get("fill")
+                else f" — {row.get('detail', '')}")
+        print(f"  {mark} {row['slot']:20}{kind}{fill}")
+        if row.get("description"):
+            print(f"      {row['description']}")
     for row in report["steps"] + report["middleware"]:
         mark = {"ok": "+", "disabled": "-"}.get(row["status"], "!")
         uses = f" uses={row['uses']}" if row.get("uses") else ""
@@ -169,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--events", action="store_true", help="stream events to stderr")
     run.add_argument("--verbose", action="store_true", help="include all event types")
     run.add_argument("--lineage-out", help="write lineage records to a JSONL file")
+    run.add_argument("--fill", action="append", metavar="NAME=REF",
+                     help="fill a declared preset slot (repeatable)")
     run.set_defaults(func=_cmd_run)
 
     presets = commands.add_parser("presets", help="list discoverable presets")
@@ -185,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
         "doctor", help="dry-check a preset: resolve every slot, show wrap decisions")
     doctor.add_argument("preset", help="preset name or path to a .toml file")
     doctor.add_argument("--json", action="store_true", help="machine-readable report")
+    doctor.add_argument("--fill", action="append", metavar="NAME=REF",
+                        help="fill a declared preset slot (repeatable)")
     doctor.set_defaults(func=_cmd_doctor)
 
     mcp = commands.add_parser(

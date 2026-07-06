@@ -283,12 +283,45 @@ neither the core nor MCP.
 
 ### Presets
 `tomllib` + lookup across `./presets`, `$THROUGHLINE_PRESETS`, builtin.
-`extends` deep-merges config/middleware; steps are replaced wholesale (step
-order is the essence of the pipeline — merging it is dangerous).
-`[steps.with]` (even an empty table) means "call the factory"; its absence
-means "this is already a ready step". Middleware are enabled by the presence
-of their table, disabled with `enabled = false`; third-party ones plug in
-with `uses = "pkg.mod:Class"`.
+`extends` deep-merges config/middleware/slots/fill; steps are replaced
+wholesale (step order is the essence of the pipeline — merging it is
+dangerous). `[steps.with]` (even an empty table) means "call the factory";
+its absence means "this is already a ready step". Middleware are enabled by
+the presence of their table, disabled with `enabled = false`; third-party
+ones plug in with `uses = "pkg.mod:Class"`.
+
+### Preset slots: abstract presets are honest, not broken
+A reusable preset cannot ship your retriever or your LLM. Pretending
+otherwise (a demo component in the slot) hides the decision; leaving a
+dangling import path fails late and cryptically. Slots make the hole
+explicit: `[slots.x]` declares it (kind, description, optional default),
+`@x` references it, and the fill comes from outside — `[fill]` in an
+extending preset, `load_preset(fill=...)`, or `--fill` on the CLI, in that
+ascending precedence order. Two invariants:
+
+- **Fail at build time, with the whole shopping list.** A referenced,
+  unfilled slot aborts `build_flow` listing *every* missing slot with its
+  kind and description — not one error per attempt. `doctor` reports slot
+  status instead of failing, because its job is diagnosis.
+- **The kind is checked against what ends up in the slot.** A slot filled
+  with a factory is checked after the factory call; a slot substituted into
+  `[steps.with]` / middleware options is checked on the resolved object.
+  Substitution inserts the *live* object, not the reference string, so
+  factories receive components, not strings to re-resolve.
+
+Fill values in TOML are component references; live objects enter only
+through the Python `fill=` argument. `@@x` escapes a literal leading `@`.
+
+### Composites in TOML
+`map`/`parallel`/`branch` mirror the Python composites one-to-one; a
+`[[steps]]` entry takes exactly one of `uses`/`map`/`parallel`/`branch`.
+Inner references (including `@slot`) are used directly — there is no
+per-route factory syntax on purpose: nested factory tables would grow a
+second configuration language inside the first. A factory belongs in your
+module (`uses`-level `[steps.with]` covers the one common case: the mapped
+step's own kwargs). `branch.selector` is a payload key by default; a string
+with `:` imports a callable — the ambiguity is resolved by the one character
+that cannot appear in a dict key you'd route on.
 
 ### Third-party onboarding — three paths
 1. **wrap()/as_step** — the object already exists in code: one line.
