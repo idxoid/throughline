@@ -1,0 +1,41 @@
+# Builtin demo preset: offline RAG pipeline with the full middleware stack.
+# Run it:  followers run demo --input "how does lineage work?" --blame
+name = "demo"
+description = "Offline RAG demo: retrieve -> prompt -> answer, fully instrumented."
+
+[config]
+top_k = 3
+
+[[steps]]
+uses = "followers.contrib.demo:normalize"
+name = "normalize"
+
+[[steps]]
+uses = "followers.contrib.demo:retriever"
+name = "retrieve"
+[steps.with]
+top_k = 3
+
+[[steps]]
+uses = "followers.contrib.demo:prompt"
+name = "prompt"
+
+[[steps]]
+uses = "followers.contrib.demo:llm"
+name = "answer"
+
+[middleware.observe]
+
+[middleware.metrics]
+
+[middleware.retry]
+attempts = 2
+
+[middleware.validate]
+scope = "final"      # final run output only; "step" checks every step
+on_fail = "warn"
+[middleware.validate.schema]
+type = "object"
+required = ["question", "context", "answer"]
+
+[middleware.lineage]

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# tooling / local state
+.claude/
+.cursor/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# runtime debris (event logs, lineage exports)
+/memory
+*.jsonl
