@@ -140,6 +140,31 @@ class PresetTests(unittest.TestCase):
         self.assertIn("answer", blame_steps)
         self.assertEqual(result.violations, [])
 
+    def test_example_rag_docs_preset_end_to_end(self):
+        flow = load_preset("examples/presets/rag-docs.toml")
+        result = flow.run({"question": "how should answers cite docs?"})
+        self.assertIn("answer", result.output)
+        self.assertEqual(result.violations, [])
+        self.assertIsNotNone(result.lineage)
+        self.assertGreater(result.metrics["counters"]["llm.calls"], 0)
+        self.assertGreater(result.metrics["counters"]["claims.cited"], 0)
+
+    def test_example_data_qa_preset_end_to_end(self):
+        from examples.data_qa import seed_dataset
+
+        flow = load_preset("examples/presets/data-qa.toml")
+        ref = seed_dataset()
+        result = flow.run({"dataset": ref})
+        report = result.output["report"]
+        self.assertEqual(report["status"], "fail")
+        self.assertGreater(len(report["violations"]), 0)
+        self.assertEqual(result.violations, [])
+        self.assertGreater(result.metrics["counters"]["data.rules"], 0)
+        self.assertGreater(result.metrics["counters"]["llm.calls"], 0)
+        cached = flow.run({"dataset": ref})
+        self.assertEqual(cached.output["report"], report)
+        self.assertEqual(cached.metrics["counters"]["cache.hits"], 1)
+
 
 class BuildFlowUnit(unittest.TestCase):
     def test_build_flow_minimal_dict(self):

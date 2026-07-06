@@ -463,4 +463,10 @@ $ PYTHONPATH=src pytest -q tests                         # ...or via pytest ([de
 $ PYTHONPATH=src python3 examples/demo_rag.py            # offline end-to-end demo
 ```
 
+[examples/surgical_context/](examples/surgical_context/) is a *live* integration
+example: code-QA and change-impact flows over a real code graph
+([surgical_context](https://github.com/idxoid/surgical_context)), where every
+answer line cites a validated `file:line` span — evidence & claim lineage
+end-to-end. Needs external services; see its README.
+
 See [ARCHITECTURE.md](ARCHITECTURE.md) for design decisions.

@@ -1,0 +1,6 @@
+customer_id,email,age,plan,signup_date,country
+c001,ada@example.com,34,pro,2025-02-14,US
+c002,,17,free,2025-03-01,US
+c003,bad-email,28,team,2025-02-30,DE
+c003,duplicate@example.com,41,enterprise,2025-04-05,CA
+c004,lee@example.com,,pro,2025-01-15,US

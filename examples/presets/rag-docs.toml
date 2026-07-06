@@ -1,0 +1,78 @@
+# Example production-style RAG preset for internal documentation.
+# Run from the repository root:
+#   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run rag-docs -i "how should answers cite docs?" --json
+name = "rag-docs"
+description = "Internal docs RAG: docs directory -> chunks -> keyword retriever -> cited answer."
+
+[config]
+top_k = 4
+corpus_dir = "examples/corpus/obsidian"
+
+[[steps]]
+uses = "examples.rag_docs:normalize"
+name = "normalize"
+effects = "pure"
+
+[[steps]]
+uses = "examples.rag_docs:retriever"
+name = "retrieve"
+effects = "pure"
+[steps.with]
+corpus_dir = "examples/corpus/obsidian"
+top_k = 4
+chunk_chars = 900
+overlap = 120
+
+[[steps]]
+uses = "examples.rag_docs:prompt"
+name = "prompt"
+effects = "pure"
+
+[[steps]]
+uses = "examples.rag_docs:llm"
+name = "llm"
+effects = "pure"
+
+[[steps]]
+uses = "throughline.modules:citations_step"
+name = "citations"
+effects = "pure"
+[steps.with]
+require = "warn"
+
+[middleware.observe]
+
+[middleware.metrics]
+
+[middleware.semantic_cache]
+uses = "throughline.modules.cache:SemanticCache"
+embedder = "examples.rag_docs:lexical_embedder"
+key = "question"
+threshold = 0.86
+max_size = 256
+ttl = 3600
+
+[middleware.retry]
+attempts = 3
+backoff = 0.05
+factor = 2.0
+step = "llm"
+
+[middleware.validate]
+scope = "final"
+on_fail = "raise"
+[middleware.validate.schema]
+type = "object"
+required = ["answer"]
+[middleware.validate.schema.properties.answer]
+type = "string"
+
+[middleware.lineage]
+extract = "answer"
+
+[middleware.quota]
+scope = "run"
+max_cost = 0.05
+[middleware.quota.cost]
+"llm.input_tokens" = 0.000001
+"llm.output_tokens" = 0.000003

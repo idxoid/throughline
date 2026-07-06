@@ -1,0 +1,103 @@
+# Example data QA bot preset.
+# Contract: {"dataset": ArtifactRef, "rules"?}; for CLI demos, dataset may be a CSV path.
+# Run from the repository root:
+#   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run data-qa --json-input -i '{"dataset":"examples/data/customers.csv"}' --json
+name = "data-qa"
+description = "Data QA bot: profile CSV, run deterministic rules, summarize a strict report."
+
+[[steps]]
+uses = "examples.data_qa:load_profile"
+name = "load-profile"
+effects = "pure"
+
+[[steps]]
+uses = "examples.data_qa:rule_checks"
+name = "check-rules"
+effects = "pure"
+[steps.with]
+verifier = "data-qa-rules"
+
+[[steps]]
+uses = "examples.data_qa:llm_summary"
+name = "llm-summary"
+effects = "pure"
+
+[middleware.observe]
+
+[middleware.metrics]
+
+[middleware.cache]
+step = "check-rules"
+key = "rules_cache_key"
+max_size = 256
+ttl = 3600
+on_effects = "raise"
+
+[middleware.validate_profile]
+uses = "throughline.modules.validate:Validate"
+scope = "step"
+step = "load-profile"
+at = "output"
+on_fail = "raise"
+[middleware.validate_profile.schema]
+type = "object"
+required = ["dataset_id", "profile", "rows", "rules", "rules_cache_key"]
+[middleware.validate_profile.schema.properties.profile]
+type = "object"
+required = ["row_count", "columns", "null_counts"]
+[middleware.validate_profile.schema.properties.rows]
+type = "array"
+[middleware.validate_profile.schema.properties.rules]
+type = "array"
+
+[middleware.validate_checks]
+uses = "throughline.modules.validate:Validate"
+scope = "step"
+step = "check-rules"
+at = "output"
+on_fail = "raise"
+[middleware.validate_checks.schema]
+type = "object"
+required = ["violations", "status", "profile"]
+[middleware.validate_checks.schema.properties.status]
+type = "string"
+enum = ["pass", "fail"]
+[middleware.validate_checks.schema.properties.violations]
+type = "array"
+[middleware.validate_checks.schema.properties.violations.items]
+type = "object"
+required = ["rule", "severity", "message", "count"]
+
+[middleware.retry]
+attempts = 2
+backoff = 0.05
+step = "llm-summary"
+
+[middleware.validate]
+scope = "final"
+on_fail = "raise"
+[middleware.validate.schema]
+type = "object"
+required = ["report"]
+[middleware.validate.schema.properties.report]
+type = "object"
+required = ["dataset", "status", "summary", "profile", "violations"]
+additionalProperties = false
+[middleware.validate.schema.properties.report.properties.dataset]
+type = "string"
+[middleware.validate.schema.properties.report.properties.status]
+type = "string"
+enum = ["pass", "fail"]
+[middleware.validate.schema.properties.report.properties.summary]
+type = "string"
+[middleware.validate.schema.properties.report.properties.profile]
+type = "object"
+[middleware.validate.schema.properties.report.properties.violations]
+type = "array"
+
+[middleware.quota]
+scope = "run"
+max_cost = 0.02
+[middleware.quota.cost]
+"llm.input_tokens" = 0.000001
+"llm.output_tokens" = 0.000003
