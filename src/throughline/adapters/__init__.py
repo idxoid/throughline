@@ -14,14 +14,14 @@
 No framework is imported — only the object's own methods are used, so any
 library (or your in-house code) onboards with one line:
 
-    followers.wrap(my_langchain_chain)
-    followers.wrap(my_llamaindex_engine, unwrap=lambda r: r.response)
+    throughline.wrap(my_langchain_chain)
+    throughline.wrap(my_llamaindex_engine, unwrap=lambda r: r.response)
 
 Duck typing is implicit while it works and explicit when it does not:
 `wrap` fails *at wrap time* with the full detection trace (what was tried,
 what the object actually has, how to force a method), and `explain(obj)`
 shows the decision — detected method, skipped candidates, call convention —
-before anything runs. `followers doctor <preset>` runs the same inspection
+before anything runs. `throughline doctor <preset>` runs the same inspection
 over a whole preset.
 """
 
@@ -79,7 +79,7 @@ def _detect(obj: Any, method: str | None = None) -> dict:
         chosen = "__call__"
     if chosen is None:
         found = _public_callables(obj)
-        hint = f"\n  Hint: fl.wrap(obj, method={found[0]!r})" if found else ""
+        hint = f"\n  Hint: tl.wrap(obj, method={found[0]!r})" if found else ""
         raise WrapError(
             f"cannot adapt {type(obj).__name__}: none of the known interfaces "
             f"found and the object is not callable.\n"
@@ -97,7 +97,7 @@ def explain(obj: Any, method: str | None = None) -> dict:
 
 
 def render_explain(obj: Any, method: str | None = None) -> str:
-    """Human-readable form of ``explain`` — used by `followers doctor`."""
+    """Human-readable form of ``explain`` — used by `throughline doctor`."""
     try:
         decision = _detect(obj, method)
     except WrapError as exc:
@@ -137,6 +137,6 @@ def wrap(obj: Any, name: str | None = None, method: str | None = None,
 from . import llm, rag  # noqa: E402  (re-export convenience)
 
 # NOTE: MCP is not an adapter — adapters bring components INTO flows, MCP
-# serves flows OUTWARD. It lives in followers.contrib.mcp (fully optional).
+# serves flows OUTWARD. It lives in throughline.contrib.mcp (fully optional).
 
 __all__ = ["wrap", "explain", "render_explain", "llm", "rag", "METHOD_PRIORITY"]

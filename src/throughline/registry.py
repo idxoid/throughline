@@ -3,16 +3,16 @@
 The core knows a small closed set of component *kinds* (contracts), never
 concrete implementations. Three ways a component becomes resolvable:
 
-  1. ``@followers.register("name", kind="step")`` in user code,
+  1. ``@throughline.register("name", kind="step")`` in user code,
   2. an import path reference "package.module:attr" (no registration needed),
-  3. a pip-installed package exposing the "followers.plugins" entry-point
+  3. a pip-installed package exposing the "throughline.plugins" entry-point
      group (discovered lazily on first miss).
 
 A plugin entry point may load to a *manifest* — a dict exporting many typed
 components at once:
 
     COMPONENTS = {
-        "requires": "followers>=0.1",       # optional compatibility gate
+        "requires": "throughline>=0.1",       # optional compatibility gate
         "step:clean": clean,
         "middleware:audit": Audit,
         "store.cache:redis": RedisCache,    # subkind pins the protocol
@@ -21,7 +21,7 @@ components at once:
 
 Plain (un-prefixed) keys default to kind="step" for backward compatibility.
 Broken or incompatible plugins never break the host: they are skipped and
-reported as unavailable (see ``followers components``).
+reported as unavailable (see ``throughline components``).
 
 The kind taxonomy is open where it matters and strict where it matters:
 the core enforces its closed set of *built-in slots* (KINDS) at every point
@@ -50,7 +50,7 @@ from .errors import RegistryError
 #:
 #: The taxonomy itself is NOT closed: plugins may define namespaced kinds
 #: ("acme.reranker") for their own components. The core catalogs them
-#: (resolve/entries/`followers components`) but enforces nothing — unless the
+#: (resolve/entries/`throughline components`) but enforces nothing — unless the
 #: kind's author declared a protocol via ``register_kind``. Strict at the
 #: point of use, open at the point of definition.
 #:
@@ -321,7 +321,7 @@ def available(kind: str | None = None) -> dict[str, Any]:
 
 
 def entries() -> list[RegistryEntry]:
-    """Full typed catalog — what ``followers components`` renders."""
+    """Full typed catalog — what ``throughline components`` renders."""
     load_plugins()
     return sorted(_REGISTRY.values(), key=lambda e: (e.kind, e.name))
 
@@ -333,15 +333,15 @@ def unavailable() -> dict[str, str]:
 
 
 def _compatible(requirement: str) -> str | None:
-    """Minimal 'followers>=X.Y' gate. Returns a reason string if incompatible."""
+    """Minimal 'throughline>=X.Y' gate. Returns a reason string if incompatible."""
     from . import __version__
-    match = re.fullmatch(r"\s*followers\s*>=\s*([\d.]+)\s*", requirement)
+    match = re.fullmatch(r"\s*throughline\s*>=\s*([\d.]+)\s*", requirement)
     if match is None:
-        return f"unsupported requires spec {requirement!r} (only 'followers>=X.Y')"
+        return f"unsupported requires spec {requirement!r} (only 'throughline>=X.Y')"
     def parts(version: str) -> tuple:
         return tuple(int(p) for p in version.split(".") if p.isdigit())
     if parts(__version__) < parts(match.group(1)):
-        return f"requires followers>={match.group(1)}, installed {__version__}"
+        return f"requires throughline>={match.group(1)}, installed {__version__}"
     return None
 
 
@@ -358,7 +358,7 @@ def _register_manifest(manifest: dict, source: str) -> list[str]:
     return loaded
 
 
-def load_plugins(group: str = "followers.plugins") -> list[str]:
+def load_plugins(group: str = "throughline.plugins") -> list[str]:
     """Discover pip-installed plugins via entry points (idempotent)."""
     global _PLUGINS_LOADED
     if _PLUGINS_LOADED:

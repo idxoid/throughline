@@ -1,4 +1,4 @@
-# followers
+# throughline
 Follow every step. Trace every line.
 
 **A framework-neutral control plane for LLM/RAG/agent pipelines.**
@@ -8,8 +8,8 @@ modules for pre/post-processing, validation, metrics, observability and
 with one line — no framework imports required.
 
 ```
-pip install followers            # core: zero dependencies
-pip install followers[anthropic] # + Claude adapter
+pip install throughline            # core: zero dependencies
+pip install throughline[anthropic] # + Claude adapter
 ```
 
 ## Five concepts
@@ -25,8 +25,8 @@ pip install followers[anthropic] # + Claude adapter
 ## 60-second tour
 
 ```python
-import followers as fl
-from followers.modules import MetricsMiddleware, LineageMiddleware, Validate, Retry, Observe
+import throughline as tl
+from throughline.modules import MetricsMiddleware, LineageMiddleware, Validate, Retry, Observe
 
 def normalize(payload):                      # plain function = step
     return {"question": str(payload).strip()}
@@ -35,7 +35,7 @@ def answer(payload, ctx):                    # (payload, ctx) also works
     ctx.metric("llm.calls")                  # domain metrics from inside steps
     return {**payload, "answer": f"42 (re: {payload['question']})"}
 
-flow = fl.Flow(
+flow = tl.Flow(
     [normalize, answer],
     middleware=[
         Observe("console"),                                  # events -> stderr
@@ -59,12 +59,12 @@ result.lineage.blame() # which step wrote every line of the answer
 Or the same thing declaratively — try the builtin demo (fully offline):
 
 ```console
-$ followers run demo --input "how does lineage work?" --blame --metrics
-$ followers run demo --input "..." --json          # machine-readable report
-$ followers presets                                # list discoverable presets
-$ followers doctor demo                            # dry-check: resolve every slot, show wrap decisions
-$ followers components                             # typed catalog: kind, source, broken plugins
-$ followers mcp --preset demo                      # serve flows as MCP tools (stdio)
+$ throughline run demo --input "how does lineage work?" --blame --metrics
+$ throughline run demo --input "..." --json          # machine-readable report
+$ throughline presets                                # list discoverable presets
+$ throughline doctor demo                            # dry-check: resolve every slot, show wrap decisions
+$ throughline components                             # typed catalog: kind, source, broken plugins
+$ throughline mcp --preset demo                      # serve flows as MCP tools (stdio)
 ```
 
 ## Presets
@@ -100,51 +100,51 @@ required = ["answer"]
 extract = "answer"
 ```
 
-`followers run rag-qa -i "..."` — search order: explicit path → `./presets/` →
-`$FOLLOWERS_PRESETS` → builtin. `extends` deep-merges config and middleware;
+`throughline run rag-qa -i "..."` — search order: explicit path → `./presets/` →
+`$THROUGHLINE_PRESETS` → builtin. `extends` deep-merges config and middleware;
 child steps replace parent steps wholesale. Custom middleware plugs in with
 `uses = "pkg.mod:Class"` inside its table.
 
 ## Onboarding third-party RAG / chains / agents
 
-`followers.wrap(obj)` duck-types foreign objects — **no framework imports**,
+`throughline.wrap(obj)` duck-types foreign objects — **no framework imports**,
 so anything with a recognizable method works, today and for frameworks that
 don't exist yet:
 
 | Your object | Detected method | One-liner |
 |---|---|---|
-| LangChain runnable / LCEL chain / LangGraph app | `invoke` | `fl.wrap(chain)` |
-| LlamaIndex query engine | `query` | `fl.wrap(engine, unwrap=lambda r: r.response)` |
-| LlamaIndex / LangChain retriever | `retrieve` / `get_relevant_documents` | `fl.wrap(retriever)` |
-| Vector store / search client | `search` | `fl.wrap(store)` |
-| Agent (most frameworks) | `run` | `fl.wrap(agent)` |
-| LLM client | `complete` / `generate` | `fl.wrap(client)` |
-| Anything callable | `__call__` | `fl.wrap(fn)` |
+| LangChain runnable / LCEL chain / LangGraph app | `invoke` | `tl.wrap(chain)` |
+| LlamaIndex query engine | `query` | `tl.wrap(engine, unwrap=lambda r: r.response)` |
+| LlamaIndex / LangChain retriever | `retrieve` / `get_relevant_documents` | `tl.wrap(retriever)` |
+| Vector store / search client | `search` | `tl.wrap(store)` |
+| Agent (most frameworks) | `run` | `tl.wrap(agent)` |
+| LLM client | `complete` / `generate` | `tl.wrap(client)` |
+| Anything callable | `__call__` | `tl.wrap(fn)` |
 
 Force a method with `method=`, post-process results with `unwrap=`. A whole
 external flow (LangGraph graph, LlamaIndex pipeline) is just **one step** of a
-followers flow — orchestrate around orchestrators.
+throughline flow — orchestrate around orchestrators.
 
 For dict-shaped RAG payloads (`{"question"} → +context → +prompt → +answer`),
-`followers.adapters.rag` adds ready helpers:
+`throughline.adapters.rag` adds ready helpers:
 
 ```python
-from followers.adapters.rag import retriever_step, prompt_step
+from throughline.adapters.rag import retriever_step, prompt_step
 
-flow = fl.Flow([
+flow = tl.Flow([
     retriever_step(any_retriever, top_k=5),   # duck-typed, normalizes doc objects
     prompt_step("Context:\n{context}\n\nQ: {question}"),
-    fl.wrap(my_llm_client, unwrap=lambda r: r.content),
+    tl.wrap(my_llm_client, unwrap=lambda r: r.content),
 ])
 ```
 
 ### Registry & pip plugins
 
 ```python
-@fl.register("clean")                       # kind defaults to "step"
+@tl.register("clean")                       # kind defaults to "step"
 def clean(text): ...
 
-fl.register("redis", RedisCache(), kind="store.cache")   # subkind pins the protocol
+tl.register("redis", RedisCache(), kind="store.cache")   # subkind pins the protocol
 ```
 
 The registry is a **typed catalog**: the core knows a closed set of built-in
@@ -157,15 +157,15 @@ that names both kinds.
 
 The slots are closed; the **taxonomy is not**: plugins introduce namespaced
 kinds (`kind="acme.reranker"`), catalog-only by default, enforced if the
-author declares a protocol via `fl.register_kind(check=..., shape=...)`.
+author declares a protocol via `tl.register_kind(check=..., shape=...)`.
 Bare unknown kinds and built-in namespaces (`store.*`) are rejected loudly.
 
 Pip-installed packages expose many components at once via a *manifest* in the
-`followers.plugins` entry-point group:
+`throughline.plugins` entry-point group:
 
 ```python
 COMPONENTS = {
-    "requires": "followers>=0.1",     # incompatible plugins are skipped, not fatal
+    "requires": "throughline>=0.1",     # incompatible plugins are skipped, not fatal
     "step:clean": clean,
     "middleware:audit": Audit,
     "store.cache:redis": RedisCache,  # subkind pins the protocol
@@ -173,20 +173,20 @@ COMPONENTS = {
 ```
 
 Discovery is automatic; name collisions resolve deterministically (builtin <
-plugin < local). `followers components` prints everything found, grouped by
+plugin < local). `throughline components` prints everything found, grouped by
 kind with sources — including broken plugins and why they failed.
 
 ### When duck typing breaks: fast answers
 
 Implicit while it works, explicit when it does not:
 
-- `fl.wrap(obj)` fails **at wrap time** with the full detection trace — what
-  was tried, what the object actually has, `Hint: fl.wrap(obj, method='fetch')`.
-- `fl.explain(obj)` shows the decision before anything runs: detected method,
+- `tl.wrap(obj)` fails **at wrap time** with the full detection trace — what
+  was tried, what the object actually has, `Hint: tl.wrap(obj, method='fetch')`.
+- `tl.explain(obj)` shows the decision before anything runs: detected method,
   skipped lower-priority candidates.
-- `followers doctor my-preset` dry-checks a whole preset — resolves every
+- `throughline doctor my-preset` dry-checks a whole preset — resolves every
   slot, runs detection and kind checks, prints the plan without executing it.
-- `fl.modules.StrictOutputs()` catches the distant-failure classic: a
+- `tl.modules.StrictOutputs()` catches the distant-failure classic: a
   forgotten `unwrap=` leaks a framework object into the payload and blows up
   three steps later — this middleware names the cause at the step that
   produced it, with the offender's exact path (`$.results[0].docs[3].meta:
@@ -196,17 +196,17 @@ Implicit while it works, explicit when it does not:
 ### Real LLMs
 
 ```python
-from followers.adapters.llm import anthropic_chat, from_callable
+from throughline.adapters.llm import anthropic_chat, from_callable
 
 llm = anthropic_chat(model="claude-opus-4-8", system="Answer briefly.")
-# lazy import: pip install followers[anthropic]; token usage lands in metrics
+# lazy import: pip install throughline[anthropic]; token usage lands in metrics
 
 any_llm = from_callable(lambda prompt: my_client.complete(prompt))  # provider-agnostic
 ```
 
 ## Three lineages
 
-followers tracks provenance at three levels, each with its own mechanism and
+throughline tracks provenance at three levels, each with its own mechanism and
 cost:
 
 | Lineage | Answers | Mechanism | Cost |
@@ -238,7 +238,7 @@ link preserved), new lines are generates. `ledger.blame()` / `trace(id)` /
 The evidence **contract** is `EvidenceChunk` — text plus explicit provenance:
 
 ```python
-from followers.modules import EvidenceChunk
+from throughline.modules import EvidenceChunk
 
 class MyRetriever:
     def retrieve(self, query):
@@ -265,9 +265,9 @@ is a violation), strips them from the answer and records line→evidence links.
 Generation is stochastic; verification of the links is not.
 
 ```python
-from followers.modules import citations_step, verify_claims_step
+from throughline.modules import citations_step, verify_claims_step
 
-flow = fl.Flow(
+flow = tl.Flow(
     [
         retriever_step(any_retriever, top_k=5),
         prompt_step("Cite sources as [eN].\n{context}\n\nQ: {question}", cite="context"),
@@ -298,9 +298,9 @@ run once its budget is spent — checks fire *before* each step, so the next
 expensive call never happens.
 
 ```python
-from followers.modules import Cache, SemanticCache, Quota
+from throughline.modules import Cache, SemanticCache, Quota
 
-flow = fl.Flow(
+flow = tl.Flow(
     [retrieve, prompt, llm],
     middleware=[
         MetricsMiddleware(),                  # observers first: hits must be visible
@@ -332,14 +332,14 @@ flow = fl.Flow(
   deep-copied so callers can't corrupt the cache.
 - **Purity guard**: a cache hit skips the step — side effects inside it
   silently do not happen. Purity is declarative, not guessed:
-  `@fl.step("save", effects="db.write")` (or `effects=` in a preset), and
+  `@tl.step("save", effects="db.write")` (or `effects=` in a preset), and
   `Cache(on_effects="skip"|"raise"|"allow")` enforces the declaration.
   Semantics in ARCHITECTURE.
 - Quota reads the same counters steps already report via `ctx.metric()`.
   Budget scope is **explicit**: `scope="run"` (default, robust even against
   a shared metrics collector) or `scope="global"` (lifetime of the
   instance); need both, stack two instances. Details in ARCHITECTURE.
-- Both build on the core `fl.EarlyReturn(output)` primitive — raise it from
+- Both build on the core `tl.EarlyReturn(output)` primitive — raise it from
   any step or hook to finish the run early with `output`. It is never
   retried and never counted as an error.
 
@@ -374,7 +374,7 @@ thousand-document reports — lives in an **artifact store** and travels as an
 `ArtifactRef` handle:
 
 ```python
-store = fl.MemoryArtifactStore(default_ttl=1800)
+store = tl.MemoryArtifactStore(default_ttl=1800)
 ref = store.put(chunks, session="run-42")     # -> ArtifactRef with a summary
 payload = {"question": "...", "corpus": ref}  # payload stays tiny
 store.slice(ref, 100, 200)                    # fetch only what you need
@@ -392,13 +392,13 @@ backends plug in through the same duck-typed contract, distributed as
 
 MCP is deliberately **not** part of the core or the adapters: adapters bring
 third-party components *into* flows, MCP serves flows *outward* to one
-particular protocol. It lives in `followers.contrib.mcp` — still zero
+particular protocol. It lives in `throughline.contrib.mcp` — still zero
 dependencies, but fully detachable: nothing else imports it, and it is one of
 possibly many serving layers (HTTP, queue consumers) built on the same public
 surface.
 
 ```console
-$ followers mcp --preset rag-qa        # stdio MCP server, zero dependencies
+$ throughline mcp --preset rag-qa        # stdio MCP server, zero dependencies
 ```
 
 Every preset becomes a tool (`run_rag_qa`); the boundary is a serialized
@@ -415,9 +415,9 @@ snapshot with an explicit contract, in both directions:
   included via `Observe`).
 
 The reverse direction needs no adapter at all: an agent inside a flow is just
-`fl.wrap(agent)` — its budget counted by `Quota`, its output tracked by
+`tl.wrap(agent)` — its budget counted by `Quota`, its output tracked by
 lineage, like any other step. In code:
-`followers.contrib.mcp.MCPServer(flows={...}, presets=[...])`;
+`throughline.contrib.mcp.MCPServer(flows={...}, presets=[...])`;
 `project_result()` is reusable on its own.
 
 ## Reserved boundary: policy / security (future)
@@ -433,11 +433,11 @@ namespaced, so no plugin can squat it); ecosystem experiments live as
 ## Composites & custom middleware
 
 ```python
-fl.map_step(step, workers=8)                  # fan out over items (threads)
-fl.parallel({"a": step_a, "b": step_b})       # same payload, gathered dict
-fl.branch(lambda p: p["lang"], {"ru": ru_flow_step, "en": en_step}, default=en_step)
+tl.map_step(step, workers=8)                  # fan out over items (threads)
+tl.parallel({"a": step_a, "b": step_b})       # same payload, gathered dict
+tl.branch(lambda p: p["lang"], {"ru": ru_flow_step, "en": en_step}, default=en_step)
 
-class Audit(fl.Middleware):                   # your own module
+class Audit(tl.Middleware):                   # your own module
     def on_step_end(self, ctx, step, payload, output):
         ctx.emit("audit", step=step.name)
         return output
@@ -449,8 +449,8 @@ retain payload versions between steps. You pay with memory at the plug-in
 site, not via defaults.
 
 Middleware hooks: `on_run_start/end`, `on_step_start/end`, `on_step_error`
-(return `fl.Handled(value)` to recover), `wrap_step` (full control — retries,
-tracing). Raise `fl.EarlyReturn(output)` anywhere to finish the run early;
+(return `tl.Handled(value)` to recover), `wrap_step` (full control — retries,
+tracing). Raise `tl.EarlyReturn(output)` anywhere to finish the run early;
 its exact semantics (what is skipped, what still runs, `ctx.short_circuited`)
 are a formal contract — see ARCHITECTURE and `tests/test_early_return.py`.
 First middleware in the list is the outermost layer.

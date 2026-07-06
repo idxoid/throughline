@@ -1,7 +1,7 @@
 import unittest
 
-import followers as fl
-from followers.modules.lineage import LineageLedger, LineageMiddleware, lines_of
+import throughline as tl
+from throughline.modules.lineage import LineageLedger, LineageMiddleware, lines_of
 
 
 class LinesOf(unittest.TestCase):
@@ -101,7 +101,7 @@ class MiddlewareIntegration(unittest.TestCase):
         def edit(payload, ctx):
             return payload.replace("hello", "HELLO") + "\nsigned off"
 
-        flow = fl.Flow([fl.as_step(compose, "compose"), fl.as_step(edit, "edit")],
+        flow = tl.Flow([tl.as_step(compose, "compose"), tl.as_step(edit, "edit")],
                        middleware=[LineageMiddleware()])
         result = flow.run("hello world\nsecond line")
         ledger = result.lineage
@@ -119,7 +119,7 @@ class MiddlewareIntegration(unittest.TestCase):
         def refine(payload, ctx):
             return {**payload, "answer": payload["answer"] + "\nline c"}
 
-        flow = fl.Flow([fl.as_step(build, "build"), fl.as_step(refine, "refine")],
+        flow = tl.Flow([tl.as_step(build, "build"), tl.as_step(refine, "refine")],
                        middleware=[LineageMiddleware(extract=lambda p: p["answer"]
                                                      if isinstance(p, dict) else p)])
         ledger = flow.run("q?").lineage
@@ -128,7 +128,7 @@ class MiddlewareIntegration(unittest.TestCase):
         self.assertEqual(by_text["line c"]["step"], "refine")
 
     def test_list_payload_lineage(self):
-        flow = fl.Flow([fl.as_step(lambda docs: docs + ["extra doc"], "append")],
+        flow = tl.Flow([tl.as_step(lambda docs: docs + ["extra doc"], "append")],
                        middleware=[LineageMiddleware()])
         ledger = flow.run(["doc one", "doc two"]).lineage
         by_text = {e["text"]: e for e in ledger.blame()}

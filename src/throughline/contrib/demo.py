@@ -1,15 +1,15 @@
 """Self-contained demo components for the builtin `demo` preset.
 
 Everything is offline and deterministic: a keyword retriever over a tiny
-corpus about the followers project itself, a prompt template, and a fake LLM.
+corpus about the throughline project itself, a prompt template, and a fake LLM.
 Referenced from presets by import path, e.g.:
 
     [[steps]]
-    uses = "followers.contrib.demo:retriever"
+    uses = "throughline.contrib.demo:retriever"
 
 It can also be invoked directly from a source checkout for a quick smoke test:
 
-    python src/followers/contrib/demo.py --input "how does lineage work?"
+    python src/throughline/contrib/demo.py --input "how does lineage work?"
 """
 
 from __future__ import annotations
@@ -20,12 +20,12 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from followers.adapters.llm import FakeLLM
-from followers.adapters.rag import make_keyword_retriever, prompt_step
-from followers.step import Step
+from throughline.adapters.llm import FakeLLM
+from throughline.adapters.rag import make_keyword_retriever, prompt_step
+from throughline.step import Step
 
 CORPUS = [
-    "followers is a lightweight orchestrator for agents and LLM pipelines.",
+    "throughline is a lightweight orchestrator for agents and LLM pipelines.",
     "A Flow is an ordered chain of steps executed under a middleware stack.",
     "Middleware plugs in validation, metrics, observability and lineage.",
     "Line-level lineage answers which step wrote every line of the output.",
@@ -62,10 +62,10 @@ def main(argv: list[str] | None = None) -> int:
     """Run the builtin demo preset when this module is executed as a script."""
     import argparse
 
-    from followers.cli import main as cli_main
+    from throughline.cli import main as cli_main
 
     parser = argparse.ArgumentParser(
-        description="Run the builtin offline followers demo preset."
+        description="Run the builtin offline throughline demo preset."
     )
     parser.add_argument(
         "--input",

@@ -4,18 +4,18 @@ import io
 import json
 import unittest
 
-import followers as fl
-from followers.contrib.mcp import MCPServer, project_result
-from followers.store import MemoryArtifactStore
+import throughline as tl
+from throughline.contrib.mcp import MCPServer, project_result
+from throughline.store import MemoryArtifactStore
 
 
 def _make_server(**kwargs) -> MCPServer:
-    flow = fl.Flow(
+    flow = tl.Flow(
         [lambda p: {"question": str(p)}, lambda p: {**p, "answer": f"42 (re: {p['question']})"}],
-        middleware=[fl.modules.MetricsMiddleware()],
+        middleware=[tl.modules.MetricsMiddleware()],
         name="qa",
     )
-    big_flow = fl.Flow([lambda p: ["item"] * 5000], name="bulk")
+    big_flow = tl.Flow([lambda p: ["item"] * 5000], name="bulk")
     return MCPServer(presets=[], flows={"run_qa": flow, "run_bulk": big_flow}, **kwargs)
 
 
@@ -31,7 +31,7 @@ def _tool_payload(response: dict) -> dict:
 class MCPProtocolTests(unittest.TestCase):
     def test_initialize(self):
         response = _call(_make_server(), "initialize")
-        self.assertEqual(response["result"]["serverInfo"]["name"], "followers")
+        self.assertEqual(response["result"]["serverInfo"]["name"], "throughline")
         self.assertIn("tools", response["result"]["capabilities"])
 
     def test_tools_list_exposes_flows_and_get_artifact(self):
@@ -120,10 +120,10 @@ class AgentCallsFlowTests(unittest.TestCase):
 
 class ProjectResultTests(unittest.TestCase):
     def test_projection_includes_metrics_and_lineage_stats(self):
-        flow = fl.Flow(
+        flow = tl.Flow(
             [lambda p: {"answer": "hi"}],
-            middleware=[fl.modules.MetricsMiddleware(),
-                        fl.modules.LineageMiddleware(extract="answer")],
+            middleware=[tl.modules.MetricsMiddleware(),
+                        tl.modules.LineageMiddleware(extract="answer")],
         )
         report = project_result(flow.run("q"))
         self.assertEqual(report["output"]["answer"], "hi")
@@ -132,7 +132,7 @@ class ProjectResultTests(unittest.TestCase):
         self.assertEqual(report["lineage"]["lines"], 1)
 
     def test_projection_respects_byte_budget(self):
-        flow = fl.Flow([lambda p: "x" * 10_000])
+        flow = tl.Flow([lambda p: "x" * 10_000])
         store = MemoryArtifactStore()
         report = project_result(flow.run("q"), store=store, max_bytes=100)
         self.assertIn("$artifact", report["output"])

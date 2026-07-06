@@ -8,7 +8,7 @@ Evidence lineage comes for free with this adapter: ``retriever_step`` records
 every returned chunk in the run's EvidenceLedger (id, source metadata, score,
 which retriever, which step), and ``prompt_step(cite=...)`` renders chunks
 with their [eN] ids so a downstream ``citations_step`` can link answer lines
-back to sources. See ``followers.modules.citations``.
+back to sources. See ``throughline.modules.citations``.
 
 The evidence *contract* is ``EvidenceChunk``: a retriever that returns chunks
 states its provenance (source, span, score) explicitly and skips the
@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any, Callable, Iterable
 
 from ..context import RunContext
-from ..errors import FollowersError
+from ..errors import ThroughlineError
 from ..modules.citations import EvidenceChunk, evidence_ledger
 from ..step import Step
 
@@ -51,7 +51,7 @@ def retriever_step(retriever: Any, top_k: int | None = None,
             method = getattr(retriever, candidate)
             break
     if method is None:
-        raise FollowersError(
+        raise ThroughlineError(
             f"cannot adapt retriever {type(retriever).__name__}: "
             f"none of {RETRIEVE_METHODS} found")
 
@@ -109,7 +109,7 @@ def prompt_step(template: str, out_key: str = "prompt", name: str = "prompt",
         try:
             rendered = template.format(**view)
         except KeyError as exc:
-            raise FollowersError(f"prompt template needs key {exc} "
+            raise ThroughlineError(f"prompt template needs key {exc} "
                                  f"but payload has {sorted(payload)}") from exc
         return {**payload, out_key: rendered}
 

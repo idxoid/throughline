@@ -3,10 +3,10 @@
 import unittest
 import weakref
 
-import followers as fl
-from followers.adapters import explain, render_explain
-from followers.errors import WrapError
-from followers.modules.debug import Snapshots, StrictOutputs
+import throughline as tl
+from throughline.adapters import explain, render_explain
+from throughline.errors import WrapError
+from throughline.modules.debug import Snapshots, StrictOutputs
 
 
 class Fetcher:
@@ -29,22 +29,22 @@ class Ambiguous:
 class WrapDiagnosticsTests(unittest.TestCase):
     def test_wrap_fails_at_wrap_time_with_trace(self):
         with self.assertRaises(WrapError) as caught:
-            fl.wrap(Fetcher())
+            tl.wrap(Fetcher())
         message = str(caught.exception)
         self.assertIn("Tried (in order)", message)
         self.assertIn("invoke", message)
         self.assertIn("Object has: fetch", message)
-        self.assertIn("Hint: fl.wrap(obj, method='fetch')", message)
+        self.assertIn("Hint: tl.wrap(obj, method='fetch')", message)
         self.assertIn("fetch", caught.exception.found)
 
     def test_forced_method_missing_is_loud(self):
         with self.assertRaises(WrapError) as caught:
-            fl.wrap(Fetcher(), method="query")
+            tl.wrap(Fetcher(), method="query")
         self.assertIn("forced method 'query'", str(caught.exception))
 
     def test_forced_method_works(self):
-        step = fl.wrap(Fetcher(), method="fetch")
-        self.assertEqual(fl.Flow([step]).run("x").output, "fetched:x")
+        step = tl.wrap(Fetcher(), method="fetch")
+        self.assertEqual(tl.Flow([step]).run("x").output, "fetched:x")
 
     def test_explain_shows_decision_and_skipped(self):
         decision = explain(Ambiguous())
@@ -58,7 +58,7 @@ class WrapDiagnosticsTests(unittest.TestCase):
         self.assertIn("UNADAPTABLE", render_explain(Fetcher()))
 
     def test_step_meta_records_detection(self):
-        step = fl.wrap(Ambiguous())
+        step = tl.wrap(Ambiguous())
         self.assertEqual(step.meta["adapter"], "query")
         self.assertIn("run", step.meta["skipped"])
         self.assertFalse(step.meta["unwrap"])
@@ -74,16 +74,16 @@ class StrictOutputsTests(unittest.TestCase):
         def leaky(payload, ctx):
             return ForeignResponse("oops")  # forgot unwrap=
 
-        result = fl.Flow(
-            [fl.as_step(leaky, "leaky"), lambda r: r],
+        result = tl.Flow(
+            [tl.as_step(leaky, "leaky"), lambda r: r],
             middleware=[StrictOutputs()],
         ).run("x")
         self.assertTrue(any("leaky" in v and "ForeignResponse" in v
                             for v in result.violations))
 
     def test_reports_the_exact_path(self):
-        flow = fl.Flow(
-            [fl.as_step(lambda p: {"answer": ForeignResponse("x")}, "gen")],
+        flow = tl.Flow(
+            [tl.as_step(lambda p: {"answer": ForeignResponse("x")}, "gen")],
             middleware=[StrictOutputs()])
         violations = flow.run("q").violations
         self.assertTrue(any("$.answer" in v and "ForeignResponse" in v
@@ -92,68 +92,68 @@ class StrictOutputsTests(unittest.TestCase):
     def test_finds_leak_at_any_depth(self):
         """The precise contract: the whole object graph, not one level."""
         deep = {"results": [{"docs": [{"meta": ForeignResponse("x")}]}]}
-        flow = fl.Flow([lambda p: deep], middleware=[StrictOutputs()])
+        flow = tl.Flow([lambda p: deep], middleware=[StrictOutputs()])
         violations = flow.run("q").violations
         self.assertTrue(any("$.results[0].docs[0].meta" in v for v in violations))
 
     def test_non_scalar_dict_key_is_a_leak(self):
-        flow = fl.Flow([lambda p: {("tuple", "key"): "v"}],
+        flow = tl.Flow([lambda p: {("tuple", "key"): "v"}],
                        middleware=[StrictOutputs()])
         self.assertTrue(any("<key>" in v for v in flow.run("q").violations))
 
     def test_raise_mode(self):
-        flow = fl.Flow([lambda p: ForeignResponse("x")],
+        flow = tl.Flow([lambda p: ForeignResponse("x")],
                        middleware=[StrictOutputs(on_foreign="raise")])
-        with self.assertRaises(fl.FlowError):
+        with self.assertRaises(tl.FlowError):
             flow.run("q")
 
     def test_plain_outputs_pass(self):
-        flow = fl.Flow([lambda p: {"answer": "fine", "ref": fl.ArtifactRef(id="s/k"),
+        flow = tl.Flow([lambda p: {"answer": "fine", "ref": tl.ArtifactRef(id="s/k"),
                                    "nested": [{"deep": [1, 2.5, None, True]}]}],
                        middleware=[StrictOutputs()])
         self.assertEqual(flow.run("q").violations, [])
 
     def test_allow_extends_the_contract(self):
-        flow = fl.Flow([lambda p: {"custom": ForeignResponse("x")}],
+        flow = tl.Flow([lambda p: {"custom": ForeignResponse("x")}],
                        middleware=[StrictOutputs(allow=(ForeignResponse,))])
         self.assertEqual(flow.run("q").violations, [])
 
     def test_step_scoping(self):
-        flow = fl.Flow(
-            [fl.as_step(lambda p: ForeignResponse("a"), "loader"),
-             fl.as_step(lambda p: {"answer": "clean"}, "llm")],
+        flow = tl.Flow(
+            [tl.as_step(lambda p: ForeignResponse("a"), "loader"),
+             tl.as_step(lambda p: {"answer": "clean"}, "llm")],
             middleware=[StrictOutputs(step="llm*")])
         self.assertEqual(flow.run("q").violations, [])  # loader is out of scope
 
     def test_cycle_safety(self):
         cyclic: dict = {"name": "loop"}
         cyclic["self"] = cyclic
-        flow = fl.Flow([lambda p: cyclic], middleware=[StrictOutputs()])
+        flow = tl.Flow([lambda p: cyclic], middleware=[StrictOutputs()])
         self.assertEqual(flow.run("q").violations, [])  # terminates, no offender
 
     def test_budget_truncation_is_announced(self):
         wide = {"items": list(range(100))}
-        flow = fl.Flow([lambda p: wide],
-                       middleware=[fl.modules.Observe(), StrictOutputs(max_nodes=10)])
+        flow = tl.Flow([lambda p: wide],
+                       middleware=[tl.modules.Observe(), StrictOutputs(max_nodes=10)])
         result = flow.run("q")
         self.assertIn("foreign_scan_truncated",
                       [e["type"] for e in result.events])
 
     def test_early_returned_output_is_checked(self):
-        from followers.errors import EarlyReturn
+        from throughline.errors import EarlyReturn
 
         def bail(payload, ctx):
             raise EarlyReturn({"answer": ForeignResponse("cached-wrong")})
 
-        result = fl.Flow([bail], middleware=[StrictOutputs()]).run("q")
+        result = tl.Flow([bail], middleware=[StrictOutputs()]).run("q")
         self.assertTrue(any("early_return" in v and "$.answer" in v
                             for v in result.violations))
 
 
 class SnapshotsTests(unittest.TestCase):
     def test_opt_in_records_every_version(self):
-        flow = fl.Flow(
-            [fl.as_step(str.upper, "up"), fl.as_step(str.strip, "strip")],
+        flow = tl.Flow(
+            [tl.as_step(str.upper, "up"), tl.as_step(str.strip, "strip")],
             middleware=[Snapshots()],
         )
         result = flow.run("  hi  ")
@@ -162,7 +162,7 @@ class SnapshotsTests(unittest.TestCase):
         self.assertEqual(trail[-1][1], "HI")
 
     def test_ring_buffer_cap(self):
-        flow = fl.Flow([lambda p: p + 1] * 5, middleware=[Snapshots(max_versions=3)])
+        flow = tl.Flow([lambda p: p + 1] * 5, middleware=[Snapshots(max_versions=3)])
         result = flow.run(0)
         self.assertEqual(len(result.ctx.artifacts["snapshots"]), 3)
 
@@ -171,7 +171,7 @@ class SnapshotsTests(unittest.TestCase):
             payload["x"].append(1)
             return payload
 
-        flow = fl.Flow([mutate, mutate], middleware=[Snapshots(deep=True)])
+        flow = tl.Flow([mutate, mutate], middleware=[Snapshots(deep=True)])
         result = flow.run({"x": []})
         trail = result.ctx.artifacts["snapshots"]
         self.assertEqual(trail[0][1], {"x": []})       # input untouched
@@ -200,14 +200,14 @@ class PayloadRetentionInvariantTests(unittest.TestCase):
         def drop_garbage(payload, ctx):
             return {"answer": payload["answer"]}
 
-        flow = fl.Flow(
+        flow = tl.Flow(
             [make_garbage, drop_garbage],
             middleware=[
-                fl.modules.Observe(),  # a bare string would mean a JSONL path
-                fl.modules.MetricsMiddleware(),
-                fl.modules.Retry(attempts=2),
-                fl.modules.Validate(schema={"type": "object"}),
-                fl.modules.LineageMiddleware(extract="answer"),
+                tl.modules.Observe(),  # a bare string would mean a JSONL path
+                tl.modules.MetricsMiddleware(),
+                tl.modules.Retry(attempts=2),
+                tl.modules.Validate(schema={"type": "object"}),
+                tl.modules.LineageMiddleware(extract="answer"),
             ],
         )
         result = flow.run({"question": "q"})
@@ -228,7 +228,7 @@ class PayloadRetentionInvariantTests(unittest.TestCase):
             graveyard.append(weakref.ref(obj))
             return {"heavy": obj}
 
-        flow = fl.Flow([make_garbage, lambda p: {"done": True}],
+        flow = tl.Flow([make_garbage, lambda p: {"done": True}],
                        middleware=[Snapshots()])
         result = flow.run(None)
         import gc
@@ -241,7 +241,7 @@ class PayloadRetentionInvariantTests(unittest.TestCase):
 
 class DoctorTests(unittest.TestCase):
     def test_inspect_preset_reports_slots(self):
-        from followers.presets import inspect_preset
+        from throughline.presets import inspect_preset
         report = inspect_preset("demo")
         self.assertTrue(report["ok"])
         self.assertTrue(all(r["status"] == "ok" for r in report["steps"]))
@@ -249,11 +249,11 @@ class DoctorTests(unittest.TestCase):
                             for r in report["middleware"]))
 
     def test_doctor_cli(self):
-        from followers.cli import main
+        from throughline.cli import main
         self.assertEqual(main(["doctor", "demo"]), 0)
 
     def test_components_cli(self):
-        from followers.cli import main
+        from throughline.cli import main
         self.assertEqual(main(["components"]), 0)
 
 
@@ -261,11 +261,11 @@ class SlotKindCheckTests(unittest.TestCase):
     def test_wrong_kind_in_middleware_slot(self):
         config = {
             "name": "bad",
-            "steps": [{"uses": "followers.contrib.demo:normalize"}],
-            "middleware": {"custom": {"uses": "followers.store:MemoryArtifactStore"}},
+            "steps": [{"uses": "throughline.contrib.demo:normalize"}],
+            "middleware": {"custom": {"uses": "throughline.store:MemoryArtifactStore"}},
         }
-        with self.assertRaises(fl.PresetError) as caught:
-            fl.build_flow(config)
+        with self.assertRaises(tl.PresetError) as caught:
+            tl.build_flow(config)
         message = str(caught.exception)
         self.assertIn("[middleware.custom]", message)
         self.assertIn("'middleware' contract", message)

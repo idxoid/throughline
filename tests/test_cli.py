@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from followers.cli import main
+from throughline.cli import main
 
 
 class CliTests(unittest.TestCase):
@@ -59,7 +59,7 @@ class CliTests(unittest.TestCase):
         proc = subprocess.run(
             [
                 sys.executable,
-                str(root / "src" / "followers" / "contrib" / "demo.py"),
+                str(root / "src" / "throughline" / "contrib" / "demo.py"),
                 "--input",
                 "what are presets?",
             ],

@@ -89,7 +89,7 @@ class Observe(Middleware):
         if otel:
             try:
                 from opentelemetry import trace  # type: ignore
-                self._tracer = trace.get_tracer("followers")
+                self._tracer = trace.get_tracer("throughline")
             except ImportError:
                 self.otel = False
 
@@ -123,7 +123,7 @@ class Observe(Middleware):
 
         def traced(payload):
             with self._tracer.start_as_current_span(f"{ctx.flow}.{step.name}") as span:
-                span.set_attribute("followers.run_id", ctx.run_id)
-                span.set_attribute("followers.step", step.name)
+                span.set_attribute("throughline.run_id", ctx.run_id)
+                span.set_attribute("throughline.step", step.name)
                 return invoke(payload)
         return traced

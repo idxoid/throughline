@@ -1,4 +1,4 @@
-"""followers — a framework-neutral control plane for agents and LLM pipelines.
+"""throughline — a framework-neutral control plane for agents and LLM pipelines.
 
 Not another orchestrator competing for your steps: a zero-dependency kernel
 that runs the pipeline and owns the cross-cutting concerns — validation,
@@ -15,18 +15,18 @@ Five concepts:
 
 Quickstart:
 
-    import followers as fl
+    import throughline as tl
 
-    flow = fl.Flow(
-        [str.strip, fl.adapters.llm.FakeLLM().answer_step()],
-        middleware=[fl.modules.MetricsMiddleware(), fl.modules.LineageMiddleware()],
+    flow = tl.Flow(
+        [str.strip, tl.adapters.llm.FakeLLM().answer_step()],
+        middleware=[tl.modules.MetricsMiddleware(), tl.modules.LineageMiddleware()],
     )
-    result = flow.run("  what is followers?  ")
+    result = flow.run("  what is throughline?  ")
     print(result.output, result.metrics, result.lineage.render_blame(), sep="\n")
 """
 
 from .context import EventBus, Result, RunContext
-from .errors import (ArtifactExpired, EarlyReturn, FlowError, FollowersError,
+from .errors import (ArtifactExpired, EarlyReturn, FlowError, ThroughlineError,
                      PresetError, QuotaExceeded, RegistryError, StoreError,
                      ValidationError, WrapError)
 from .flow import Flow
@@ -51,7 +51,7 @@ __all__ = [
     "wrap", "explain",
     "ArtifactRef", "MemoryArtifactStore",
     "load_preset", "load_preset_config", "build_flow", "list_presets", "find_preset",
-    "FollowersError", "FlowError", "ValidationError", "RegistryError", "PresetError",
+    "ThroughlineError", "FlowError", "ValidationError", "RegistryError", "PresetError",
     "WrapError", "StoreError", "ArtifactExpired",
     "EarlyReturn", "QuotaExceeded",
     "adapters", "modules",

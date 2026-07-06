@@ -1,12 +1,12 @@
 """CLI: run presets, inspect components, dry-check pipelines, serve MCP.
 
-    followers run demo --input "how does lineage work?" --blame
-    followers run pipeline.toml --input-file question.txt --json
-    followers presets
-    followers steps
-    followers components            # typed catalog (kind, source, plugins)
-    followers doctor rag-qa         # resolve every slot without running
-    followers mcp --preset rag-qa   # [contrib] expose flows as MCP tools (stdio)
+    throughline run demo --input "how does lineage work?" --blame
+    throughline run pipeline.toml --input-file question.txt --json
+    throughline presets
+    throughline steps
+    throughline components            # typed catalog (kind, source, plugins)
+    throughline doctor rag-qa         # resolve every slot without running
+    throughline mcp --preset rag-qa   # [contrib] expose flows as MCP tools (stdio)
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import json
 import sys
 
 from . import __version__
-from .errors import FollowersError
+from .errors import ThroughlineError
 from .modules.observe import ConsoleSink
 from .presets import inspect_preset, list_presets, load_preset, load_preset_config
 from .registry import available, entries, unavailable
@@ -91,7 +91,7 @@ def _cmd_presets(_: argparse.Namespace) -> int:
     for name, path in sorted(list_presets().items()):
         try:
             description = load_preset_config(name).get("description", "")
-        except FollowersError:
+        except ThroughlineError:
             description = "(unreadable)"
         print(f"{name:20} {path}  {description}")
     return 0
@@ -100,7 +100,7 @@ def _cmd_presets(_: argparse.Namespace) -> int:
 def _cmd_steps(_: argparse.Namespace) -> int:
     components = available()
     if not components:
-        print("(registry is empty — components register via @followers.register, "
+        print("(registry is empty — components register via @throughline.register, "
               "entry points, or are referenced by import path in presets)")
     for name, obj in sorted(components.items()):
         kind = type(obj).__name__
@@ -111,8 +111,8 @@ def _cmd_steps(_: argparse.Namespace) -> int:
 def _cmd_components(_: argparse.Namespace) -> int:
     catalog = entries()
     if not catalog:
-        print("(no components discovered — register via @followers.register, "
-              "manifests in the 'followers.plugins' entry-point group, or "
+        print("(no components discovered — register via @throughline.register, "
+              "manifests in the 'throughline.plugins' entry-point group, or "
               "reference by import path in presets)")
     current_kind = None
     for entry in catalog:
@@ -150,7 +150,7 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
     from .contrib.mcp import MCPServer
     server = MCPServer(presets=args.preset or None,
                        max_result_bytes=args.max_result_bytes)
-    print(f"followers MCP server: {len(server._flows)} flow tool(s) + get_artifact "
+    print(f"throughline MCP server: {len(server._flows)} flow tool(s) + get_artifact "
           f"(stdio, newline-delimited JSON-RPC)", file=sys.stderr)
     server.serve_stdio()
     return 0
@@ -158,9 +158,9 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="followers",
+        prog="throughline",
         description="Framework-neutral control plane for agents and LLM pipelines.")
-    parser.add_argument("--version", action="version", version=f"followers {__version__}")
+    parser.add_argument("--version", action="version", version=f"throughline {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
 
     run = commands.add_parser("run", help="run a preset")
@@ -203,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except FollowersError as exc:
+    except ThroughlineError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

@@ -1,13 +1,13 @@
-"""Exception hierarchy. Everything raised by followers derives from FollowersError."""
+"""Exception hierarchy. Everything raised by throughline derives from ThroughlineError."""
 
 from __future__ import annotations
 
 
-class FollowersError(Exception):
-    """Base class for all followers errors."""
+class ThroughlineError(Exception):
+    """Base class for all throughline errors."""
 
 
-class FlowError(FollowersError):
+class FlowError(ThroughlineError):
     """A step failed while a flow was running.
 
     Attributes:
@@ -44,7 +44,7 @@ class EarlyReturn(Exception):
                 raise EarlyReturn(known[payload])
             return payload
 
-    Deliberately NOT a FollowersError subclass so that generic error handlers
+    Deliberately NOT a ThroughlineError subclass so that generic error handlers
     don't swallow it.
     """
 
@@ -53,7 +53,7 @@ class EarlyReturn(Exception):
         self.output = output
 
 
-class QuotaExceeded(FollowersError):
+class QuotaExceeded(ThroughlineError):
     """A Quota budget was exhausted (raised when on_exceed="raise").
 
     Attributes:
@@ -72,7 +72,7 @@ class QuotaExceeded(FollowersError):
         self.scope = scope
 
 
-class ValidationError(FollowersError):
+class ValidationError(ThroughlineError):
     """A validator rejected a payload.
 
     Attributes:
@@ -85,15 +85,15 @@ class ValidationError(FollowersError):
         self.step = step
 
 
-class RegistryError(FollowersError):
+class RegistryError(ThroughlineError):
     """A component reference could not be resolved."""
 
 
-class PresetError(FollowersError):
+class PresetError(ThroughlineError):
     """A preset file is missing or malformed."""
 
 
-class WrapError(FollowersError):
+class WrapError(ThroughlineError):
     """A foreign object could not be adapted into a Step.
 
     Attributes:
@@ -107,7 +107,7 @@ class WrapError(FollowersError):
         self.found = found or []
 
 
-class StoreError(FollowersError):
+class StoreError(ThroughlineError):
     """An artifact store operation failed."""
 
 

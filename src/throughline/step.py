@@ -2,7 +2,7 @@
 
 Anything callable becomes a step. ``as_step`` also accepts registry names and
 foreign objects (LangChain runnables, LlamaIndex engines, retrievers, agents)
-via ``followers.adapters.wrap`` duck-typing. Composites (map_step, parallel,
+via ``throughline.adapters.wrap`` duck-typing. Composites (map_step, parallel,
 branch) build fan-out/routing on top without turning Flow into a DAG engine.
 """
 

@@ -1,6 +1,6 @@
 """MCP serving layer: expose flows as tools for agents. Zero dependencies.
 
-Lives in ``followers.contrib`` deliberately: adapters bring third-party
+Lives in ``throughline.contrib`` deliberately: adapters bring third-party
 components INTO flows, MCP serves flows OUTWARD to one particular protocol.
 Nothing in the core (or in the adapters) imports this module — delete it and
 the framework doesn't notice. It is one of possibly many serving layers
@@ -16,7 +16,7 @@ The agent<->flow boundary, as designed:
     budget. Oversized outputs land in the artifact store and come back as a
     handle + summary — the agent pulls slices via the ``get_artifact`` tool.
     A gigabyte table cannot end up in the model context *by construction*;
-  * handles are leases (see followers.store): expiry is a normal condition.
+  * handles are leases (see throughline.store): expiry is a normal condition.
     Whether a re-run re-creates the artifact depends on the flow being
     replayable (same inputs/config/sources, stochastic steps cached or
     seeded) — the error tells the agent to re-run *if* that holds;
@@ -28,10 +28,10 @@ The transport is MCP over stdio (JSON-RPC 2.0, newline-delimited), small
 enough to implement by hand — no SDK. ``MCPServer.handle`` is the pure,
 testable unit; ``serve_stdio`` is the loop:
 
-    from followers.contrib.mcp import MCPServer
+    from throughline.contrib.mcp import MCPServer
     MCPServer(presets=["rag-qa"]).serve_stdio()
 
-or from the CLI:  followers mcp --preset rag-qa
+or from the CLI:  throughline mcp --preset rag-qa
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from typing import Any
 
 from .. import __version__
 from ..context import EventBus, RunContext
-from ..errors import ArtifactExpired, FollowersError
+from ..errors import ArtifactExpired, ThroughlineError
 from ..flow import Flow
 from ..store import MemoryArtifactStore
 
@@ -193,7 +193,7 @@ class MCPServer:
                 shape = f"text, {value.count(chr(10)) + 1} lines"
             else:
                 shape = type(value).__name__
-            raise FollowersError(
+            raise ThroughlineError(
                 f"artifact {ref!r} exceeds the context budget "
                 f"({len(rendered)} bytes, {shape}); request a slice with start/stop")
         return value
@@ -207,7 +207,7 @@ class MCPServer:
             return None
         try:
             result = self._dispatch(method, message.get("params") or {})
-        except FollowersError as exc:
+        except ThroughlineError as exc:
             return self._tool_error(message_id, exc)
         except Exception as exc:
             return {"jsonrpc": "2.0", "id": message_id,
@@ -218,7 +218,7 @@ class MCPServer:
         if method == "initialize":
             return {"protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "followers", "version": __version__}}
+                    "serverInfo": {"name": "throughline", "version": __version__}}
         if method == "ping":
             return {}
         if method == "tools/list":
@@ -232,10 +232,10 @@ class MCPServer:
                 payload = self._call_flow(self._flows[name], arguments)
             else:
                 known = ", ".join([*self._flows, "get_artifact"])
-                raise FollowersError(f"unknown tool {name!r}; available: {known}")
+                raise ThroughlineError(f"unknown tool {name!r}; available: {known}")
             text = json.dumps(payload, ensure_ascii=False, default=str)
             return {"content": [{"type": "text", "text": text}], "isError": False}
-        raise FollowersError(f"unsupported method {method!r}")
+        raise ThroughlineError(f"unsupported method {method!r}")
 
     @staticmethod
     def _tool_error(message_id: Any, exc: Exception) -> dict:

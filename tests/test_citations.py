@@ -2,11 +2,11 @@
 
 import unittest
 
-import followers as fl
-from followers.adapters.rag import KeywordRetriever, prompt_step, retriever_step
-from followers.errors import ValidationError
-from followers.modules import LineageMiddleware
-from followers.modules.citations import (ClaimLedger, EvidenceChunk, EvidenceLedger,
+import throughline as tl
+from throughline.adapters.rag import KeywordRetriever, prompt_step, retriever_step
+from throughline.errors import ValidationError
+from throughline.modules import LineageMiddleware
+from throughline.modules.citations import (ClaimLedger, EvidenceChunk, EvidenceLedger,
                                          citations_step, verify_claims_step)
 
 CORPUS = [
@@ -26,7 +26,7 @@ class EvidenceLedgerTests(unittest.TestCase):
 
     def test_retriever_step_records_evidence(self):
         step = retriever_step(KeywordRetriever(CORPUS, top_k=2))
-        result = fl.Flow([step]).run({"question": "which step wrote every line"})
+        result = tl.Flow([step]).run({"question": "which step wrote every line"})
         ledger = result.ctx.artifacts["evidence"]
         self.assertGreater(len(ledger), 0)
         record = next(iter(ledger.records.values()))
@@ -35,7 +35,7 @@ class EvidenceLedgerTests(unittest.TestCase):
 
     def test_retriever_step_evidence_opt_out(self):
         step = retriever_step(KeywordRetriever(CORPUS), evidence=False)
-        result = fl.Flow([step]).run({"question": "lineage"})
+        result = tl.Flow([step]).run({"question": "lineage"})
         self.assertNotIn("evidence", result.ctx.artifacts)
 
     def test_source_metadata_extraction(self):
@@ -49,7 +49,7 @@ class EvidenceLedgerTests(unittest.TestCase):
             def retrieve(self, query):
                 return [Doc("chunk one", {"source": "report.pdf", "page": 12}, 0.87)]
 
-        result = fl.Flow([retriever_step(MetaRetriever())]).run({"question": "q"})
+        result = tl.Flow([retriever_step(MetaRetriever())]).run({"question": "q"})
         record = next(iter(result.ctx.artifacts["evidence"].records.values()))
         self.assertEqual(record.source["source"], "report.pdf")
         self.assertAlmostEqual(record.score, 0.87)
@@ -69,7 +69,7 @@ class EvidenceChunkContractTests(unittest.TestCase):
                                       source={"$artifact": "corpus/abc"},
                                       span=(120, 134), score=0.91)]
 
-        result = fl.Flow([retriever_step(ContractRetriever())]).run({"question": "q"})
+        result = tl.Flow([retriever_step(ContractRetriever())]).run({"question": "q"})
         self.assertEqual(result.output["context"], ["exact chunk"])
         record = next(iter(result.ctx.artifacts["evidence"].records.values()))
         self.assertEqual(record.source, {"$artifact": "corpus/abc"})
@@ -110,7 +110,7 @@ class EvidenceChunkContractTests(unittest.TestCase):
         """Chunks placed straight into the payload keep their provenance when
         prompt_step registers them for citation."""
         chunk = EvidenceChunk(text="direct chunk", source="direct.pdf", span=(3, 4))
-        result = fl.Flow([prompt_step("{context}", cite="context")]).run(
+        result = tl.Flow([prompt_step("{context}", cite="context")]).run(
             {"question": "q", "context": [chunk]})
         self.assertRegex(result.output["prompt"], r"\[e1\] direct chunk")
         record = result.ctx.artifacts["evidence"].get("e1")
@@ -126,7 +126,7 @@ class EvidenceChunkContractTests(unittest.TestCase):
         def fake_llm(payload, ctx):
             return {**payload, "answer": "A claim. [e1]"}
 
-        result = fl.Flow([
+        result = tl.Flow([
             retriever_step(ContractRetriever()),
             prompt_step("{context}", cite="context"),
             fake_llm,
@@ -138,8 +138,8 @@ class EvidenceChunkContractTests(unittest.TestCase):
         self.assertEqual(joined[0]["sources"][0]["source"], "doc.md")
 
     def test_strict_outputs_treats_chunks_as_plain(self):
-        from followers.modules import StrictOutputs
-        flow = fl.Flow([lambda p: {"context": [EvidenceChunk(text="ok")]}],
+        from throughline.modules import StrictOutputs
+        flow = tl.Flow([lambda p: {"context": [EvidenceChunk(text="ok")]}],
                        middleware=[StrictOutputs()])
         self.assertEqual(flow.run("q").violations, [])
 
@@ -149,7 +149,7 @@ class CitationContractTests(unittest.TestCase):
         def fake_llm(payload, ctx):
             return {**payload, "answer": llm_text}
 
-        return fl.Flow([
+        return tl.Flow([
             retriever_step(KeywordRetriever(CORPUS, top_k=3)),
             prompt_step("Context:\n{context}\n\nQ: {question}", cite="context"),
             fake_llm,
@@ -157,7 +157,7 @@ class CitationContractTests(unittest.TestCase):
         ])
 
     def test_prompt_cite_renders_markers(self):
-        result = fl.Flow([
+        result = tl.Flow([
             retriever_step(KeywordRetriever(CORPUS, top_k=2)),
             prompt_step("{context}", cite="context"),
         ]).run({"question": "which step wrote every line"})
@@ -184,7 +184,7 @@ class CitationContractTests(unittest.TestCase):
         self.assertTrue(any("uncited line(s)" in v for v in result.violations))
 
     def test_require_raise(self):
-        with self.assertRaises(fl.FlowError):
+        with self.assertRaises(tl.FlowError):
             self._flow("Naked claim.", require="raise").run({"question": "lineage"})
 
     def test_verifier_scores_claims(self):
@@ -218,7 +218,7 @@ class CitationContractTests(unittest.TestCase):
         flow = self._flow("Nonsense. [e1]")
         flow = flow.then(verify_claims_step(lambda c, e: 0.0, threshold=0.5,
                                             on_fail="raise"))
-        with self.assertRaises(fl.FlowError):
+        with self.assertRaises(tl.FlowError):
             flow.run({"question": "lineage"})
 
 
@@ -229,7 +229,7 @@ class ClaimStatusTaxonomyTests(unittest.TestCase):
         def fake_llm(payload, ctx):
             return {**payload, "answer": llm_text}
 
-        return fl.Flow([
+        return tl.Flow([
             retriever_step(KeywordRetriever(CORPUS, top_k=3)),
             prompt_step("{context}\n\nQ: {question}", cite="context"),
             fake_llm,
@@ -271,7 +271,7 @@ class ClaimStatusTaxonomyTests(unittest.TestCase):
     def test_unknown_verdict_is_rejected(self):
         flow = self._flow("A claim. [e1]").then(
             verify_claims_step(lambda c, e: "hallucination"))
-        with self.assertRaises(fl.FlowError):
+        with self.assertRaises(tl.FlowError):
             flow.run({"question": "lineage"})
 
     def test_fail_on_narrows_the_policy(self):
@@ -287,11 +287,11 @@ class ClaimStatusTaxonomyTests(unittest.TestCase):
     def test_contradicted_can_raise(self):
         flow = self._flow("A claim. [e1]").then(
             verify_claims_step(lambda c, e: "contradicted", on_fail="raise"))
-        with self.assertRaises(fl.FlowError):
+        with self.assertRaises(tl.FlowError):
             flow.run({"question": "lineage"})
 
     def test_join_blame_carries_statuses(self):
-        flow = fl.Flow(
+        flow = tl.Flow(
             [
                 retriever_step(KeywordRetriever(CORPUS, top_k=3)),
                 prompt_step("{context}\n\nQ: {question}", cite="context"),
@@ -315,11 +315,11 @@ class JoinBlameTests(unittest.TestCase):
                     "answer": "Lineage answers which step wrote every line. [e1]\n"
                               "Free remark without citation."}
 
-        flow = fl.Flow(
+        flow = tl.Flow(
             [
                 retriever_step(KeywordRetriever(CORPUS, top_k=3)),
                 prompt_step("{context}\n\nQ: {question}", cite="context"),
-                fl.as_step(fake_llm, "draft"),
+                tl.as_step(fake_llm, "draft"),
                 citations_step(),
             ],
             middleware=[LineageMiddleware(extract="answer")],
@@ -342,7 +342,7 @@ class JoinBlameTests(unittest.TestCase):
 
     def test_join_without_lineage(self):
         claims = ClaimLedger()
-        from followers.modules.citations import ClaimRecord
+        from throughline.modules.citations import ClaimRecord
         claims.add(ClaimRecord(line_no=0, text="a claim", evidence=["e1"]))
         joined = claims.join_blame()
         self.assertEqual(joined[0]["evidence"], ["e1"])

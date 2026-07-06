@@ -25,7 +25,7 @@ text, value)``).
 Purity guard: a cached hit SKIPS the step (or the whole flow) — any side
 effect inside it (db write, email, webhook) silently does not happen. Purity
 is undecidable statically, so the contract is declarative: steps state their
-effects (``@fl.step("save", effects="db.write")``, ``as_step(fn,
+effects (``@tl.step("save", effects="db.write")``, ``as_step(fn,
 effects=...)``), and Cache enforces the declaration via ``on_effects``:
 
   * "skip" (default): declared-effectful steps are never served from or

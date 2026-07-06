@@ -1,7 +1,7 @@
 """LLM adapters.
 
 Core stays dependency-free: `anthropic_chat` imports the `anthropic` SDK
-lazily at call time (pip install followers[anthropic]); `from_callable` turns
+lazily at call time (pip install throughline[anthropic]); `from_callable` turns
 any completion function into a step; `FakeLLM` powers offline demos/tests.
 
 Payload convention for chat steps: a plain string is treated as the user
@@ -51,7 +51,7 @@ def from_callable(complete: Callable[[str], str], name: str = "llm") -> Step:
 def anthropic_chat(model: str = DEFAULT_MODEL, system: str | None = None,
                    max_tokens: int = 16000, name: str = "llm",
                    **params: Any) -> Step:
-    """Claude chat step (lazy import; requires `pip install followers[anthropic]`).
+    """Claude chat step (lazy import; requires `pip install throughline[anthropic]`).
 
     Uses the Messages API; records token usage into run metrics
     (llm.input_tokens / llm.output_tokens / llm.calls) when MetricsMiddleware

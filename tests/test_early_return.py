@@ -11,11 +11,11 @@ the semantics for every cache/quota/debug-style module.
 
 import unittest
 
-import followers as fl
-from followers.errors import EarlyReturn
+import throughline as tl
+from throughline.errors import EarlyReturn
 
 
-class Probe(fl.Middleware):
+class Probe(tl.Middleware):
     """Records every hook invocation into a shared log."""
 
     def __init__(self, label: str, log: list):
@@ -43,7 +43,7 @@ class Probe(fl.Middleware):
         return output
 
 
-class ShortCircuitInRunStart(fl.Middleware):
+class ShortCircuitInRunStart(tl.Middleware):
     def __init__(self, output):
         self.output = output
 
@@ -56,8 +56,8 @@ class EarlyReturnFromRunStartTests(unittest.TestCase):
 
     def _run(self):
         log = []
-        flow = fl.Flow(
-            [fl.as_step(lambda p: p, "never")],
+        flow = tl.Flow(
+            [tl.as_step(lambda p: p, "never")],
             middleware=[Probe("outer", log),
                         ShortCircuitInRunStart("cached"),
                         Probe("inner", log)],
@@ -85,7 +85,7 @@ class EarlyReturnFromRunStartTests(unittest.TestCase):
         self.assertTrue(result.ctx.short_circuited)
 
     def test_normal_run_flag_is_false(self):
-        result = fl.Flow([lambda p: p]).run("q")
+        result = tl.Flow([lambda p: p]).run("q")
         self.assertFalse(result.ctx.short_circuited)
 
 
@@ -98,10 +98,10 @@ class EarlyReturnFromStepTests(unittest.TestCase):
         def bail(payload, ctx):
             raise EarlyReturn("partial")
 
-        flow = fl.Flow(
-            [fl.as_step(str.upper, "first"),
-             fl.as_step(bail, "bail"),
-             fl.as_step(str.lower, "after")],
+        flow = tl.Flow(
+            [tl.as_step(str.upper, "first"),
+             tl.as_step(bail, "bail"),
+             tl.as_step(str.lower, "after")],
             middleware=[Probe("probe", log)],
         )
         return flow.run("q"), log
@@ -132,7 +132,7 @@ class EarlyReturnFromStepTests(unittest.TestCase):
             calls["n"] += 1
             raise EarlyReturn("done")
 
-        result = fl.Flow([bail], middleware=[fl.modules.Retry(attempts=5)]).run("q")
+        result = tl.Flow([bail], middleware=[tl.modules.Retry(attempts=5)]).run("q")
         self.assertEqual(result.output, "done")
         self.assertEqual(calls["n"], 1)
 
@@ -144,8 +144,8 @@ class FailureIsNotASweepTests(unittest.TestCase):
         def boom(payload, ctx):
             raise ValueError("nope")
 
-        with self.assertRaises(fl.FlowError):
-            fl.Flow([boom], middleware=[Probe("probe", log)]).run("q")
+        with self.assertRaises(tl.FlowError):
+            tl.Flow([boom], middleware=[Probe("probe", log)]).run("q")
         self.assertNotIn("probe.run_end", log)
         self.assertIn("probe.step_error:boom", log)  # error hooks did fire
 
@@ -157,10 +157,10 @@ class ModulesHonorTheContractTests(unittest.TestCase):
         def bail(payload, ctx):
             raise EarlyReturn({"answer": "substituted line"})
 
-        flow = fl.Flow(
-            [fl.as_step(lambda p: {"answer": "drafted line"}, "draft"),
-             fl.as_step(bail, "bail")],
-            middleware=[fl.modules.LineageMiddleware(extract="answer")],
+        flow = tl.Flow(
+            [tl.as_step(lambda p: {"answer": "drafted line"}, "draft"),
+             tl.as_step(bail, "bail")],
+            middleware=[tl.modules.LineageMiddleware(extract="answer")],
         )
         result = flow.run({"question": "q"})
         blame = result.lineage.blame()
@@ -168,18 +168,18 @@ class ModulesHonorTheContractTests(unittest.TestCase):
         self.assertEqual(blame[0]["step"], "early_return")
 
     def test_lineage_untouched_on_normal_runs(self):
-        flow = fl.Flow([fl.as_step(lambda p: {"answer": "x"}, "draft")],
-                       middleware=[fl.modules.LineageMiddleware(extract="answer")])
+        flow = tl.Flow([tl.as_step(lambda p: {"answer": "x"}, "draft")],
+                       middleware=[tl.modules.LineageMiddleware(extract="answer")])
         ledger = flow.run({"question": "q"}).lineage
         self.assertNotIn("early_return", ledger.steps)
 
     def test_lineage_survives_run_level_cache_hit(self):
         # Lineage inside Cache: on a hit its on_run_start never runs, so the
         # sweep sees no ledger — must be a no-op, not a KeyError.
-        flow = fl.Flow(
+        flow = tl.Flow(
             [lambda p: {"answer": p}],
-            middleware=[fl.modules.Cache(),
-                        fl.modules.LineageMiddleware(extract="answer")],
+            middleware=[tl.modules.Cache(),
+                        tl.modules.LineageMiddleware(extract="answer")],
         )
         flow.run("q")
         hit = flow.run("q")                      # would raise before the fix
@@ -190,21 +190,21 @@ class ModulesHonorTheContractTests(unittest.TestCase):
         def bail(payload, ctx):
             raise EarlyReturn("substituted")
 
-        flow = fl.Flow([fl.as_step(str.upper, "up"), bail],
-                       middleware=[fl.modules.Snapshots()])
+        flow = tl.Flow([tl.as_step(str.upper, "up"), bail],
+                       middleware=[tl.modules.Snapshots()])
         trail = flow.run("q").ctx.artifacts["snapshots"]
         self.assertEqual(trail[-1], ("early_return", "substituted"))
 
     def test_quota_fallback_end_to_end(self):
         # The composed case the contract exists for: metrics outside, quota
         # inside; the fallback output is visible, attributed, accounted.
-        flow = fl.Flow(
-            [fl.as_step(lambda p, ctx: (ctx.metric("llm.calls"), p)[1], "llm")] * 3,
+        flow = tl.Flow(
+            [tl.as_step(lambda p, ctx: (ctx.metric("llm.calls"), p)[1], "llm")] * 3,
             middleware=[
-                fl.modules.MetricsMiddleware(),
-                fl.modules.Quota(limits={"llm.calls": 1}, on_exceed="return",
+                tl.modules.MetricsMiddleware(),
+                tl.modules.Quota(limits={"llm.calls": 1}, on_exceed="return",
                                  fallback=lambda p, ctx: "budget exhausted"),
-                fl.modules.Snapshots(),
+                tl.modules.Snapshots(),
             ],
         )
         result = flow.run("q")

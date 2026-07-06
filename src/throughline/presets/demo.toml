@@ -1,5 +1,5 @@
 # Builtin demo preset: offline RAG pipeline with the full middleware stack.
-# Run it:  followers run demo --input "how does lineage work?" --blame
+# Run it:  throughline run demo --input "how does lineage work?" --blame
 name = "demo"
 description = "Offline RAG demo: retrieve -> prompt -> answer, fully instrumented."
 
@@ -7,21 +7,21 @@ description = "Offline RAG demo: retrieve -> prompt -> answer, fully instrumente
 top_k = 3
 
 [[steps]]
-uses = "followers.contrib.demo:normalize"
+uses = "throughline.contrib.demo:normalize"
 name = "normalize"
 
 [[steps]]
-uses = "followers.contrib.demo:retriever"
+uses = "throughline.contrib.demo:retriever"
 name = "retrieve"
 [steps.with]
 top_k = 3
 
 [[steps]]
-uses = "followers.contrib.demo:prompt"
+uses = "throughline.contrib.demo:prompt"
 name = "prompt"
 
 [[steps]]
-uses = "followers.contrib.demo:llm"
+uses = "throughline.contrib.demo:llm"
 name = "answer"
 
 [middleware.observe]

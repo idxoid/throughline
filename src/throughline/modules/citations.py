@@ -1,6 +1,6 @@
 """Evidence & claim lineage — the two ledgers that complete line-level lineage.
 
-followers tracks three kinds of provenance, each with its own mechanism and
+throughline tracks three kinds of provenance, each with its own mechanism and
 its own determinism budget:
 
   edit lineage      which step wrote each output line

@@ -81,7 +81,7 @@ class StrictOutputs(Middleware):
 
       * a scalar:            str, bytes, int, float, bool, None;
       * a container:         dict, list, tuple (checked recursively);
-      * a followers contract: ArtifactRef, EvidenceChunk;
+      * a throughline contract: ArtifactRef, EvidenceChunk;
       * one of your types:   anything passed in ``allow=``.
 
     Everything else — at any depth — is *foreign*: usually a framework object

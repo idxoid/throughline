@@ -1,9 +1,9 @@
 import time
 import unittest
 
-import followers as fl
-from followers.errors import ArtifactExpired, StoreError
-from followers.store import ArtifactRef, MemoryArtifactStore
+import throughline as tl
+from throughline.errors import ArtifactExpired, StoreError
+from throughline.store import ArtifactRef, MemoryArtifactStore
 
 
 class ArtifactRefTests(unittest.TestCase):
@@ -98,7 +98,7 @@ class MemoryArtifactStoreTests(unittest.TestCase):
             corpus = store.get(payload["corpus"])
             return {**payload, "n_docs": len(corpus)}
 
-        result = fl.Flow([uses_corpus]).run({"corpus": corpus_ref})
+        result = tl.Flow([uses_corpus]).run({"corpus": corpus_ref})
         self.assertEqual(result.output["n_docs"], 1000)
 
 

@@ -24,7 +24,7 @@
     uses = "my_pkg.mw:AuditTrail" # third-party middleware by import path
 
 Search order for `load_preset("name")`: explicit path (contains / or .toml)
--> ./presets/ -> $FOLLOWERS_PRESETS (os.pathsep-separated dirs) -> followers'
+-> ./presets/ -> $THROUGHLINE_PRESETS (os.pathsep-separated dirs) -> throughline'
 builtin presets.
 """
 
@@ -44,19 +44,19 @@ from .step import as_step
 _BUILTIN_DIR = Path(__file__).parent / "presets"
 
 _BUILTIN_MIDDLEWARE = {
-    "metrics": "followers.modules.metrics:MetricsMiddleware",
-    "observe": "followers.modules.observe:Observe",
-    "lineage": "followers.modules.lineage:LineageMiddleware",
-    "validate": "followers.modules.validate:Validate",
-    "retry": "followers.modules.retry:Retry",
-    "cache": "followers.modules.cache:Cache",
-    "quota": "followers.modules.quota:Quota",
+    "metrics": "throughline.modules.metrics:MetricsMiddleware",
+    "observe": "throughline.modules.observe:Observe",
+    "lineage": "throughline.modules.lineage:LineageMiddleware",
+    "validate": "throughline.modules.validate:Validate",
+    "retry": "throughline.modules.retry:Retry",
+    "cache": "throughline.modules.cache:Cache",
+    "quota": "throughline.modules.quota:Quota",
 }
 
 
 def _search_dirs() -> list[Path]:
     dirs = [Path.cwd() / "presets"]
-    env = os.environ.get("FOLLOWERS_PRESETS", "")
+    env = os.environ.get("THROUGHLINE_PRESETS", "")
     dirs += [Path(p) for p in env.split(os.pathsep) if p]
     dirs.append(_BUILTIN_DIR)
     return dirs
@@ -192,7 +192,7 @@ def load_preset(ref: str) -> Flow:
 def inspect_preset(ref: str) -> dict:
     """Dry-check a preset without running it: resolve every slot, run the
     wrap detection and kind checks, and report per-slot results. This is the
-    engine behind `followers doctor`.
+    engine behind `throughline doctor`.
     """
     from .adapters import render_explain
     config = load_preset_config(ref)

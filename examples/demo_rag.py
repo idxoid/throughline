@@ -8,12 +8,12 @@ Shows the two flagship features together:
     edited by consecutive steps — `git blame` for your pipeline output.
 """
 
-import followers as fl
-from followers.adapters.rag import make_keyword_retriever, prompt_step
-from followers.modules import LineageMiddleware, MetricsMiddleware, Observe, Retry, Validate
+import throughline as tl
+from throughline.adapters.rag import make_keyword_retriever, prompt_step
+from throughline.modules import LineageMiddleware, MetricsMiddleware, Observe, Retry, Validate
 
 CORPUS = [
-    "followers is a lightweight orchestrator for agents and LLM pipelines.",
+    "throughline is a lightweight orchestrator for agents and LLM pipelines.",
     "Line-level lineage answers which step wrote every line of the output.",
     "Middleware plugs in validation, metrics, observability and lineage.",
     "Presets are TOML files that describe steps, middleware and config.",
@@ -48,13 +48,13 @@ def refine(payload, ctx) -> dict:
     return {**payload, "answer": "\n".join(edited)}
 
 
-flow = fl.Flow(
+flow = tl.Flow(
     [
-        fl.as_step(normalize, "normalize"),
+        tl.as_step(normalize, "normalize"),
         make_keyword_retriever(CORPUS, top_k=2, name="retrieve"),
         prompt_step("Q: {question}\nCTX:\n{context}"),
-        fl.as_step(draft, "draft"),
-        fl.as_step(refine, "refine"),
+        tl.as_step(draft, "draft"),
+        tl.as_step(refine, "refine"),
     ],
     middleware=[
         Observe("console"),                       # events -> stderr
