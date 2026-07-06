@@ -127,7 +127,8 @@ class MCPServer:
         presets: preset names to expose (default: every discoverable preset).
         flows:   {tool_name: Flow} for flows built in code (merged with presets).
         store:   artifact store for oversized outputs (default: in-memory,
-                 30 min TTL).
+                 30 min TTL). A shared store is safe to pass: get_artifact
+                 serves only handles minted by this server's own session.
         max_result_bytes: byte budget for inline tool results.
     """
 
@@ -181,6 +182,14 @@ class MCPServer:
 
     def _call_get_artifact(self, arguments: dict) -> Any:
         ref = arguments["artifact"]
+        # boundary: this server only serves handles it minted itself. Until a
+        # policy layer exists (see ARCHITECTURE, reserved boundaries), a
+        # shared external store must not be readable by session-guessing.
+        session = str(ref).partition("/")[0]
+        if session != self.session:
+            raise ThroughlineError(
+                f"artifact {ref!r} is not part of this server session; "
+                f"only handles returned by this server's tools can be fetched")
         if "start" in arguments or "stop" in arguments:
             return self.store.slice(ref, arguments.get("start", 0),
                                     arguments.get("stop"))
@@ -262,6 +271,12 @@ class MCPServer:
                 try:
                     message = json.loads(line)
                 except json.JSONDecodeError:
+                    # JSON-RPC parse error: answer instead of going silent —
+                    # a client waiting on a reply must not hang forever
+                    stdout.write(json.dumps(
+                        {"jsonrpc": "2.0", "id": None,
+                         "error": {"code": -32700, "message": "parse error"}}) + "\n")
+                    stdout.flush()
                     continue
                 response = self.handle(message)
                 if response is not None:

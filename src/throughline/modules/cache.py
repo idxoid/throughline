@@ -198,6 +198,9 @@ class Cache(Middleware):
         self.version = version
         self.copy = copy
         self.on_effects = on_effects
+        # per-run pending state goes under a per-instance artifact key so
+        # stacked run-level caches (e.g. exact over semantic) each store
+        self._pending_key = f"cache_pending:{id(self)}"
         self.semantic = embedder is not None
         if store is not None:
             self._store = store
@@ -273,22 +276,22 @@ class Cache(Middleware):
             ctx.emit("cache_hit", scope="run", semantic=self.semantic)
             raise EarlyReturn(self._copy(value))
         ctx.metric("cache.misses")
-        ctx.artifacts["cache_pending"] = (namespace, text)
+        ctx.artifacts[self._pending_key] = (namespace, text)
         return payload
 
     def on_step_start(self, ctx: RunContext, step: Step, payload):
         # run-level purity guard: steps are only visible once the run is under
-        # way, so the check happens here. Dropping cache_pending means a run
-        # that contains a declared-effectful step is never stored — and a run
-        # that is never stored can never be served as a hit.
-        if self.step is not None or "cache_pending" not in ctx.artifacts:
+        # way, so the check happens here. Dropping the pending entry means a
+        # run that contains a declared-effectful step is never stored — and a
+        # run that is never stored can never be served as a hit.
+        if self.step is not None or self._pending_key not in ctx.artifacts:
             return payload
         if self._guard(ctx, step, "run"):
-            ctx.artifacts.pop("cache_pending", None)
+            ctx.artifacts.pop(self._pending_key, None)
         return payload
 
     def on_run_end(self, ctx: RunContext, output):
-        pending = ctx.artifacts.pop("cache_pending", None)
+        pending = ctx.artifacts.pop(self._pending_key, None)
         if pending is not None:
             self._store.set(pending[0], pending[1], self._copy(output))
         return output

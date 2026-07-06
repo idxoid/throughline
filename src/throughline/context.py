@@ -8,6 +8,7 @@ Core stays decoupled from concrete modules: nothing here imports them.
 
 from __future__ import annotations
 
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ class EventBus:
 
     def __init__(self) -> None:
         self._subscribers: list[Callable[[dict], None]] = []
+        self._broken: set[int] = set()  # sinks already reported as failing
 
     def subscribe(self, fn: Callable[[dict], None]) -> None:
         self._subscribers.append(fn)
@@ -36,8 +38,12 @@ class EventBus:
         for fn in list(self._subscribers):
             try:
                 fn(event)
-            except Exception:  # a broken sink must never kill the run
-                pass
+            except Exception as exc:  # a broken sink must never kill the run
+                if id(fn) not in self._broken:  # ...but must not fail silently
+                    self._broken.add(id(fn))
+                    print(f"throughline: event sink {fn!r} raised {exc!r}; "
+                          f"further errors from this sink are suppressed",
+                          file=sys.stderr)
         return event
 
 

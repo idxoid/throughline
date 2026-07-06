@@ -89,6 +89,10 @@ class Quota(Middleware):
         self.fallback = fallback
         self.warn_at = warn_at
         self.scope = scope
+        # per-run state goes under a per-instance artifact key: stacked Quota
+        # instances (the documented run-ceiling + global-kill-switch pattern)
+        # must not share step counts, baselines or warn flags
+        self._state_key = f"quota:{id(self)}"
         # lifetime accounting for scope="global": folded in at run end
         self._lifetime_counters: dict[str, float] = defaultdict(float)
         self._lifetime_seconds = 0.0
@@ -105,12 +109,12 @@ class Quota(Middleware):
         # scope="run" robust against Metrics collectors shared across runs.
         metrics = ctx.artifacts.setdefault("metrics", Metrics())
         baseline = {name: metrics.counters.get(name, 0.0) for name in self._tracked()}
-        ctx.artifacts["quota"] = {"started": time.monotonic(), "steps": 0,
-                                  "warned": set(), "baseline": baseline}
+        ctx.artifacts[self._state_key] = {"started": time.monotonic(), "steps": 0,
+                                          "warned": set(), "baseline": baseline}
         return payload
 
     def on_step_start(self, ctx: RunContext, step: Step, payload):
-        state = ctx.artifacts.get("quota")
+        state = ctx.artifacts.get(self._state_key)
         if state is None:  # defensive: run() called without on_run_start? never normally
             return payload
         state["steps"] += 1
@@ -127,7 +131,7 @@ class Quota(Middleware):
     def on_run_end(self, ctx: RunContext, output):
         # EarlyReturn contract: this is a finalizer sweep — state may be
         # absent (e.g. Quota inside a run-level Cache on a hit).
-        state = ctx.artifacts.get("quota")
+        state = ctx.artifacts.get(self._state_key)
         metrics = ctx.artifacts.get("metrics")
         if state is None or metrics is None:
             return output

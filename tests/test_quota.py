@@ -203,6 +203,50 @@ class QuotaScope(unittest.TestCase):
             Quota(scope="daily")
 
 
+class QuotaStacking(unittest.TestCase):
+    """Stacked Quota instances (the documented run-ceiling + kill-switch
+    pattern) must not share per-run state through the context."""
+
+    def test_stacked_quotas_count_steps_once(self):
+        # with a shared state dict both instances incremented "steps", so a
+        # 3-step run was counted as 6 and max_steps tripped at half budget
+        flow = tl.Flow([lambda p: p, lambda p: p, lambda p: p],
+                       middleware=[Quota(max_steps=3),
+                                   Quota(max_cost=1.0,
+                                         cost={"llm.output_tokens": 1e-6},
+                                         scope="global")])
+        self.assertEqual(flow.run("x").output, "x")
+
+    def test_stacked_quotas_keep_their_own_baselines(self):
+        # the second instance tracks different counters; its baseline snapshot
+        # must not clobber the first one's — otherwise, with a collector
+        # shared across runs, per-run deltas silently become lifetime totals
+        from throughline.modules.metrics import Metrics
+        shared = Metrics()
+        flow = tl.Flow([llm_step("llm1")],
+                       middleware=[MetricsMiddleware(collector=shared),
+                                   Quota(limits={"llm.calls": 3}),
+                                   Quota(max_cost=100.0,
+                                         cost={"llm.output_tokens": 1e-6},
+                                         scope="global")])
+        for _ in range(5):                       # tripped on run 4 before
+            self.assertEqual(flow.run("x").output, "x")
+        self.assertEqual(shared.counters["llm.calls"], 5)
+
+    def test_stacked_quotas_warn_independently(self):
+        # the one-shot warn flags were shared: whichever instance warned
+        # first about a budget name suppressed the other's warning
+        flow = tl.Flow([llm_step("llm1"), llm_step("llm2"), llm_step("llm3")],
+                       middleware=[Observe(), MetricsMiddleware(),
+                                   Quota(limits={"llm.calls": 10}, warn_at=0.1),
+                                   Quota(limits={"llm.calls": 30}, warn_at=0.05,
+                                         scope="global")])
+        result = flow.run("x")
+        warnings = [e for e in result.events if e["type"] == "quota_warning"]
+        self.assertEqual(sorted(w["scope"] for w in warnings),
+                         ["global", "run"])
+
+
 class PresetIntegration(unittest.TestCase):
     def test_quota_from_preset(self):
         flow = tl.build_flow({

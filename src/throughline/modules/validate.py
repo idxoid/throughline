@@ -173,11 +173,14 @@ class Validate(Middleware):
             return [str(exc)]
 
     def _check_callable(self, value: Any, ctx: RunContext) -> list[str]:
+        # arity is decided BEFORE the call: an AttributeError raised inside
+        # the check itself must not trigger a second (side-effecting) call
         try:
-            result = self.check(value) if self.check.__code__.co_argcount < 2 \
-                else self.check(value, ctx)
-        except AttributeError:
-            result = self.check(value)
+            wants_ctx = self.check.__code__.co_argcount >= 2
+        except AttributeError:  # builtins / callables without __code__
+            wants_ctx = False
+        try:
+            result = self.check(value, ctx) if wants_ctx else self.check(value)
         except ValidationError as exc:
             return list(exc.violations)
         except Exception as exc:

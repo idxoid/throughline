@@ -458,7 +458,8 @@ First middleware in the list is the outermost layer.
 ## Development
 
 ```console
-$ PYTHONPATH=src python3 -m unittest discover -s tests   # 253 tests, stdlib only
+$ PYTHONPATH=src python3 -m unittest discover -s tests   # stdlib-only test suite
+$ PYTHONPATH=src pytest -q tests                         # ...or via pytest ([dev] extra)
 $ PYTHONPATH=src python3 examples/demo_rag.py            # offline end-to-end demo
 ```
 

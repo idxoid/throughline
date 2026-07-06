@@ -120,6 +120,22 @@ class RunLevelCache(unittest.TestCase):
         self.assertEqual(calls["n"], 1)
         self.assertEqual(second.output, first.output)
 
+    def test_stacked_run_level_caches_both_store(self):
+        # the pending entry lived under one shared artifact key: the inner
+        # cache popped it first and the outer one never stored anything
+        calls = {"n": 0}
+
+        def work(payload, ctx):
+            calls["n"] += 1
+            return f"result:{payload}"
+        outer, inner = Cache(), Cache()
+        flow = tl.Flow([tl.as_step(work, "work")], middleware=[outer, inner])
+        self.assertEqual(flow.run("q").output, "result:q")
+        self.assertEqual(len(outer._store), 1)
+        self.assertEqual(len(inner._store), 1)
+        self.assertEqual(flow.run("q").output, "result:q")  # outer hit
+        self.assertEqual(calls["n"], 1)
+
     def test_run_end_hooks_still_apply_on_hit(self):
         from throughline.modules import Validate
         flow = tl.Flow([lambda p: {"answer": p}],

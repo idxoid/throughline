@@ -41,18 +41,13 @@ def _read_input(args: argparse.Namespace):
 
 def _cmd_run(args: argparse.Namespace) -> int:
     flow = load_preset(args.preset)
-    if args.events:
-        console = ConsoleSink(verbose=args.verbose)
-        original_run = flow.run
+    ctx = None
+    if args.events:  # subscribe the console before the run starts
+        from .context import RunContext
+        ctx = RunContext(flow=flow.name, config=dict(flow.config))
+        ctx.events.subscribe(ConsoleSink(verbose=args.verbose))
 
-        def run_with_console(payload=None, **kwargs):
-            from .context import RunContext
-            ctx = RunContext(flow=flow.name, config=dict(flow.config))
-            ctx.events.subscribe(console)
-            return original_run(payload, ctx=ctx, **kwargs)
-        flow.run = run_with_console  # type: ignore[method-assign]
-
-    result = flow.run(_read_input(args))
+    result = flow.run(_read_input(args), ctx=ctx)
 
     if args.json:
         report = {

@@ -84,7 +84,15 @@ def _adapt_callable(fn: Callable) -> Callable:
         has_var = any(p.kind == p.VAR_POSITIONAL for p in sig.parameters.values())
     except (ValueError, TypeError):  # builtins without signatures
         return lambda payload, ctx: fn(payload)
-    if has_var or len(positional) >= 2:
+    if has_var:
+        return fn
+    required = [p for p in positional if p.default is p.empty]
+    if len(required) >= 2:
+        return fn
+    # A defaulted second parameter gets the ctx only when it asks for it by
+    # name: f(payload, ctx=None) does, but f(text, strip=True) — or a foreign
+    # invoke(input, config=None) — must not receive a RunContext as `strip`.
+    if len(positional) >= 2 and positional[1].name in ("ctx", "context"):
         return fn
     return lambda payload, ctx: fn(payload)
 

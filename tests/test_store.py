@@ -33,6 +33,16 @@ class MemoryArtifactStoreTests(unittest.TestCase):
         store = MemoryArtifactStore()
         ref = store.put(list(range(100)))
         self.assertEqual(store.slice(ref, 10, 13), [10, 11, 12])
+
+    def test_size_of_large_containers_is_estimated_from_a_sample(self):
+        import json
+        store = MemoryArtifactStore()
+        value = [{"text": "chunk", "n": i % 7} for i in range(10_000)]
+        estimated = store.put(value, session="s").meta["size"]
+        exact = len(json.dumps(value, ensure_ascii=False))
+        # close enough for lease accounting, without serializing everything
+        self.assertGreater(estimated, exact * 0.5)
+        self.assertLess(estimated, exact * 2)
         text_ref = store.put("hello world")
         self.assertEqual(store.slice(text_ref, 0, 5), "hello")
 

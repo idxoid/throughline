@@ -18,6 +18,27 @@ class FlowBasics(unittest.TestCase):
         self.assertEqual(result.output, 42)
         self.assertTrue(result.ctx.state["seen"])
 
+    def test_defaulted_second_param_is_not_mistaken_for_ctx(self):
+        # f(text, strip=True) is a one-payload step with an option — the
+        # RunContext must not land in `strip`
+        seen = {}
+
+        def clean(text, strip=True):
+            seen["strip"] = strip
+            return text.strip() if strip else text
+        result = tl.Flow([clean]).run("  hello  ")
+        self.assertEqual(result.output, "hello")
+        self.assertIs(seen["strip"], True)
+
+    def test_defaulted_ctx_param_receives_ctx(self):
+        seen = {}
+
+        def with_optional_ctx(payload, ctx=None):
+            seen["ctx"] = ctx
+            return payload
+        tl.Flow([with_optional_ctx]).run("x")
+        self.assertIsInstance(seen["ctx"], tl.RunContext)
+
     def test_step_decorator_and_direct_call(self):
         @tl.step("double")
         def double(x):

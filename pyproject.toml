@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "throughline"
-version = "0.1.0"
+dynamic = ["version"]  # single source of truth: throughline.__version__
 description = "Framework-neutral control plane for agents and LLM pipelines: a zero-dependency orchestration kernel with pluggable presets, validation, metrics, observability and line-level lineage."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
 ]
 # Core is zero-dependency by design.
@@ -39,5 +40,8 @@ throughline = "throughline.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.dynamic]
+version = { attr = "throughline.__version__" }
+
 [tool.setuptools.package-data]
-throughline = ["presets/*.toml"]
+throughline = ["presets/*.toml", "py.typed"]

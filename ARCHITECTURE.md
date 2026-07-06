@@ -1,333 +1,349 @@
 # throughline — architecture
 
-Цель: лёгкий универсальный оркестратор для агентов и LLM-пайплайнов с
-подключаемыми пресетами и модулями (pre/post-обработка, валидация, метрики,
-observability, line-level lineage) и лёгким онбордингом сторонних RAG/флоу.
+Goal: a lightweight orchestrator for agents and LLM pipelines with
+pluggable presets and modules (pre/post-processing, validation, metrics,
+observability, line-level lineage) and low-friction onboarding of third-party
+RAG components and flows.
 
-## Принципы
+## Principles
 
-1. **Лёгкость = ноль зависимостей + пять концепций.** Ядро — чистый stdlib
-   (Python 3.11+: `tomllib`, `difflib`, `importlib.metadata`). Всё
-   опциональное (anthropic, jsonschema, pydantic, otel) подтягивается лениво
-   и деградирует мягко. Поверхность API: Step, Flow, Middleware, Preset,
-   Context — и всё.
-2. **Универсальность через duck-typing, а не интеграции.** Мы не импортируем
-   LangChain/LlamaIndex и не гонимся за их версиями: адаптер смотрит на сам
-   объект (`invoke`/`query`/`retrieve`/`run`/...). Любой будущий фреймворк с
-   похожей сигнатурой онбордится без изменений в throughline.
-3. **Всё сквозное — это middleware.** Валидация, метрики, наблюдаемость,
-   lineage, retry не встроены в ядро, а навешиваются слоями. Свой модуль =
-   класс с 1–2 методами.
-4. **Декларативность опциональна.** Тот же Flow собирается кодом или
-   TOML-пресетом; пресеты наследуются (`extends`), компоненты адресуются
-   именем из реестра или import-path (`pkg.mod:attr`) без регистрации.
+1. **Lightness = zero dependencies + five concepts.** The core is pure stdlib
+   (Python 3.11+: `tomllib`, `difflib`, `importlib.metadata`). Everything
+   optional (anthropic, jsonschema, pydantic, otel) is imported lazily and
+   degrades gracefully. The API surface: Step, Flow, Middleware, Preset,
+   Context — and nothing else.
+2. **Universality through duck typing, not integrations.** We do not import
+   LangChain/LlamaIndex and do not chase their versions: the adapter looks at
+   the object itself (`invoke`/`query`/`retrieve`/`run`/...). Any future
+   framework with a similar signature onboards without changing throughline.
+3. **Everything cross-cutting is middleware.** Validation, metrics,
+   observability, lineage, retry are not baked into the core — they attach as
+   layers. Your own module = a class with 1–2 methods.
+4. **Declarativity is optional.** The same Flow is built in code or from a
+   TOML preset; presets inherit (`extends`), components are addressed by a
+   registry name or an import path (`pkg.mod:attr`) without registration.
 
-## Слои
+## Layers
 
 ```
-        ┌───── CLI (throughline run/presets/steps/components/doctor/mcp) ─┐
-        │              presets.py (TOML -> Flow, inspect_preset)        │
-        ├───────────────────────────────────────────────────────────────
-core    │  flow.py     Flow: цепочка шагов + onion из middleware        │
-        │  step.py     Step, as_step, map_step / parallel / branch      │
-        │  middleware  hooks: on_run_*, on_step_*, wrap_step, Handled   │
-        │  context.py  RunContext(events, state, artifacts), Result     │
-        │  registry.py типизированный каталог: kinds, манифесты,        │
-        │              precedence, check_kind, entry-points             │
-        │  store.py    ArtifactRef (lease) + MemoryArtifactStore        │
-        ├───────────────────────────────────────────────────────────────
-modules │  metrics     counters + observations, тайминги шагов          │
-        │  observe     sinks (console/jsonl/memory) + OTel-мост         │
-        │  validate    schema-subset | jsonschema | pydantic | predicate│
-        │  lineage     edit lineage: difflib-диффы, blame/trace/jsonl   │
-        │  citations   evidence + claim lineage, join_blame, verifier   │
-        │  retry       backoff, fnmatch-скоупинг по имени шага          │
-        │  cache       LRU+TTL / semantic, run|step, purity guard       │
-        │  quota       бюджеты: счётчики/cost/seconds/steps, scope=run|global │
-        │  debug       Snapshots (opt-in история), StrictOutputs        │
-        ├───────────────────────────────────────────────────────────────
-adapters│  wrap()      duck-typing + explain()/WrapError с трассой      │
-        │  llm         anthropic (lazy), from_callable, FakeLLM         │
-        │  rag         retriever_step (+evidence), prompt_step (+cite)  │
-        ├───────────────────────────────────────────────────────────────
-contrib │  demo        офлайн-шаги для демо и смоков                    │
-(opt)   │  mcp         serving-слой: flows-as-tools, projection, handles│
-        └───────────────────────────────────────────────────────────────
+        ┌───── CLI (throughline run/presets/steps/components/doctor/mcp) ──┐
+        │              presets.py (TOML -> Flow, inspect_preset)           │
+        ├───────────────────────────────────────────────────────────────────
+core    │  flow.py     Flow: a chain of steps + an onion of middleware     │
+        │  step.py     Step, as_step, map_step / parallel / branch         │
+        │  middleware  hooks: on_run_*, on_step_*, wrap_step, Handled      │
+        │  context.py  RunContext(events, state, artifacts), Result        │
+        │  registry.py typed catalog: kinds, manifests, precedence,        │
+        │              check_kind, entry points                            │
+        │  store.py    ArtifactRef (lease) + MemoryArtifactStore           │
+        ├───────────────────────────────────────────────────────────────────
+modules │  metrics     counters + observations, per-step timings           │
+        │  observe     sinks (console/jsonl/memory) + OTel bridge          │
+        │  validate    schema-subset | jsonschema | pydantic | predicate   │
+        │  lineage     edit lineage: difflib diffs, blame/trace/jsonl      │
+        │  citations   evidence + claim lineage, join_blame, verifier      │
+        │  retry       backoff, fnmatch scoping by step name               │
+        │  cache       LRU+TTL / semantic, run|step, purity guard          │
+        │  quota       budgets: counters/cost/seconds/steps, scope=run|global │
+        │  debug       Snapshots (opt-in history), StrictOutputs           │
+        ├───────────────────────────────────────────────────────────────────
+adapters│  wrap()      duck typing + explain()/WrapError with a trace      │
+        │  llm         anthropic (lazy), from_callable, FakeLLM            │
+        │  rag         retriever_step (+evidence), prompt_step (+cite)     │
+        ├───────────────────────────────────────────────────────────────────
+contrib │  demo        offline steps for demos and smoke tests             │
+(opt)   │  mcp         serving layer: flows-as-tools, projection, handles  │
+        └───────────────────────────────────────────────────────────────────
 ```
 
-MCP — в contrib, а не в adapters, сознательно: адаптеры заводят чужие
-компоненты *внутрь* flow, MCP отдаёт flow *наружу* одному конкретному
-протоколу. Ядро и адаптеры его не импортируют (CLI-команда `mcp` грузит его
-лениво) — модуль можно удалить, и фреймворк этого не заметит.
+MCP lives in contrib, not in adapters, deliberately: adapters bring foreign
+components *into* a flow, MCP serves flows *outward* to one particular
+protocol. The core and the adapters never import it (the `mcp` CLI command
+loads it lazily) — the module can be deleted and the framework won't notice.
 
-## Ключевые решения
+## Key decisions
 
-### Поток данных
-Один payload идёт по цепочке; контекст (`RunContext`) — отдельным каналом:
-`events` (шина), `state` (пользовательский скретч), `artifacts` (то, что
-публикуют middleware: metrics, lineage, events). `Result` — фасад над
-контекстом. Ошибка шага заворачивается в `FlowError` с `step` и `ctx` —
-собранные метрики/события доступны и при падении.
+### Data flow
+One payload travels down the chain; the context (`RunContext`) is a separate
+channel: `events` (the bus), `state` (user scratch space), `artifacts` (what
+middleware publish: metrics, lineage, events). `Result` is a facade over the
+context. A step failure is wrapped into `FlowError` with `step` and `ctx` —
+the metrics/events collected so far stay inspectable even on failure.
 
 ### Onion middleware
-Первый в списке — внешний слой. Порядок вызовов:
-`on_step_start` по списку → `wrap_step` (внешний оборачивает внутренние) →
-`on_step_end` в обратном порядке. `on_step_error` может вернуть
-`Handled(value)` и погасить ошибку. Наблюдатели (metrics/observe) ничего не
-возвращают — `None` трактуется как «без изменений», поэтому их невозможно
-сломать забытым `return`.
+The first middleware in the list is the outermost layer. Call order:
+`on_step_start` in list order → `wrap_step` (outer wraps inner) →
+`on_step_end` in reverse order. `on_step_error` may return `Handled(value)`
+and extinguish the error. Observers (metrics/observe) return nothing —
+`None` is read as "unchanged", so a forgotten `return` cannot break them.
 
-Следствие для порядка: **наблюдатели — снаружи, short-circuit'еры — внутри
-них**. EarlyReturn из `on_run_start` (run-level Cache) пропускает хуки всех
-middleware правее по списку; если Cache внешний — хит случается до того, как
-Observe подписал синки и Metrics приаттачил коллектор, и становится невидимым.
-Поэтому рекомендуемый стек: Observe/Metrics → Cache → Quota/Retry/Validate/
-Lineage (хит не тратит бюджет Quota, но виден в метриках и событиях).
-`run_started` эмитится ядром после `on_run_start`-хуков — чтобы подписчики
-Observe его увидели; короткозамкнутый ран вместо него объявляет
-`run_short_circuited`.
+Consequence for ordering: **observers on the outside, short-circuiters
+inside them**. An EarlyReturn from `on_run_start` (run-level Cache) skips the
+hooks of every middleware to its right in the list; if Cache were outermost,
+a hit would fire before Observe subscribed its sinks and Metrics attached
+its collector — and become invisible. Hence the recommended stack:
+Observe/Metrics → Cache → Quota/Retry/Validate/Lineage (a hit spends none of
+Quota's budget, yet shows up in metrics and events). `run_started` is
+emitted by the core after the `on_run_start` hooks — so that Observe's
+subscribers actually see it; a short-circuited run announces itself as
+`run_short_circuited` instead.
 
-### Контракт EarlyReturn / on_run_end (формально)
-Закреплён в докстрингах Flow.run / Middleware / EarlyReturn и в
-tests/test_early_return.py — изменение этих тестов = изменение семантики
-для всех cache/quota/debug-модулей.
+### The EarlyReturn / on_run_end contract (formal)
+Pinned down in the docstrings of Flow.run / Middleware / EarlyReturn and in
+tests/test_early_return.py — changing those tests means changing the
+semantics for every cache/quota/debug module.
 
-- EarlyReturn **пропускает**: оставшиеся `on_run_start`, оставшиеся шаги,
-  и — если брошен внутри шага — `on_step_end`-хуки этого шага.
-- EarlyReturn **обходит**: `on_step_error`, Retry, счётчики ошибок — это
-  control flow, не ошибка; каждый `wrap_step` обязан ре-рейзить его
-  нетронутым.
-- `on_run_end` — **finalizer sweep, а не разматывание стека**: выполняется
-  для каждого middleware ровно один раз, в обратном порядке, и на успехе, и
-  на EarlyReturn — даже если `on_run_start` этого middleware не успел
-  отработать (всё, что внутри run-level Cache, при хите). Следствия для
-  автора модуля: `on_run_end` не имеет права предполагать, что его стейт
-  существует (`ctx.artifacts.get`/`setdefault` — см. Cache, Quota);
-  `ctx.short_circuited` сообщает, что output пришёл из EarlyReturn — если
-  модуль должен учесть пропущенную работу, делает это здесь (Lineage
-  атрибутирует подменённый вывод шагу `early_return`, Snapshots дописывает
-  его в трейл).
-- Настоящая ошибка (любое другое исключение): `on_run_end` **не выполняется**;
-  FlowError уносит ctx со всем собранным.
+- EarlyReturn **skips**: the remaining `on_run_start` hooks, the remaining
+  steps, and — if raised mid-step — that step's `on_step_end` hooks.
+- EarlyReturn **bypasses**: `on_step_error`, Retry, error counters — it is
+  control flow, not an error; every `wrap_step` must re-raise it untouched.
+- `on_run_end` is a **finalizer sweep, not stack unwinding**: it executes
+  for every middleware exactly once, in reverse order, on success and on
+  EarlyReturn alike — even if that middleware's `on_run_start` never got to
+  run (everything inside a run-level Cache, on a hit). Consequences for a
+  module author: `on_run_end` has no right to assume its state exists
+  (`ctx.artifacts.get`/`setdefault` — see Cache, Quota);
+  `ctx.short_circuited` says the output came from an EarlyReturn — if the
+  module must account for skipped work, it does so here (Lineage attributes
+  the substituted output to the `early_return` step, Snapshots appends it to
+  the trail).
+- A real error (any other exception): `on_run_end` does **not** run;
+  FlowError carries the ctx with everything collected.
 
-### Quota: scope бюджета — явный, а не побочный эффект
-Раньше «глобальный бюджет» возникал неявно: пошарил один Metrics-коллектор
-между ранами — и per-run лимиты молча превратились в lifetime-лимиты. Это
-конфигурация *другого* middleware меняла семантику Quota. Теперь scope —
-свойство самой Quota:
+### Quota: budget scope is explicit, not a side effect
+Previously a "global budget" arose implicitly: share one Metrics collector
+across runs — and per-run limits silently became lifetime limits. It was the
+configuration of a *different* middleware changing Quota's semantics. Now
+scope is a property of the Quota itself:
 
-- `scope="run"` (дефолт): бюджет на один ран. Устойчив by construction —
-  на `on_run_start` снимается baseline-снапшот счётчиков, расход считается
-  дельтой от него. Шаренный коллектор больше не может незаметно поменять
-  смысл лимитов.
-- `scope="global"`: lifetime инстанса middleware. Расход завершённых ранов
-  фолдится в инстанс под локом в `on_run_end`; параллельные незавершённые
-  раны учитываются приблизительно (только их собственная дельта). "seconds" —
-  суммарное время внутри ранов, "steps" — суммарные шаги, "quota.cost" —
-  lifetime-цифра.
+- `scope="run"` (default): the budget covers one run. Robust by
+  construction — a baseline snapshot of the counters is taken at
+  `on_run_start`, and consumption is measured as a delta against it. A
+  shared collector can no longer silently change what the limits mean.
+- `scope="global"`: the lifetime of the middleware instance. Consumption of
+  finished runs is folded into the instance under a lock in `on_run_end`;
+  concurrent in-flight runs are counted approximately (only their own
+  delta). "seconds" means cumulative time spent inside runs, "steps" means
+  total steps, "quota.cost" is the lifetime figure.
 
-Смешанные требования (потолок на запрос + глобальный kill switch) — это два
-инстанса Quota в стеке: scope композируется как всё остальное, а не
-превращается в матрицу параметров внутри одного middleware. `QuotaExceeded`
-и события `quota_exceeded`/`quota_warning` несут `scope` — алёрты различают
-«дорогой запрос» и «кончился дневной бюджет».
+Mixed requirements (a per-request ceiling + a global kill switch) are two
+Quota instances in the stack: scope composes like everything else instead of
+turning into a parameter matrix inside one middleware. `QuotaExceeded` and
+the `quota_exceeded`/`quota_warning` events carry `scope` — alerts can tell
+"an expensive request" from "the daily budget ran out".
 
-### Cache: purity guard — кэш-хит пропускает сайд-эффекты
-Хит пропускает шаг (или весь flow) целиком — запись в БД, письмо, webhook
-внутри него молча не происходят. Это не баг кэша, это его определение,
-поэтому защита не может быть эвристикой: purity статически неразрешима, и
-угадывание дало бы ложную уверенность. Контракт декларативный — шаг сам
-объявляет эффекты (`@tl.step("save", effects="db.write")`, `effects="pure"`,
-`effects = "..."` в `[[steps]]` пресета; None = не заявлено), декларация
-живёт в `Step.meta["effects"]` и переживает rename/пресеты.
+### Cache: purity guard — a cache hit skips side effects
+A hit skips the step (or the whole flow) entirely — a database write, an
+email, a webhook inside it silently do not happen. That is not a cache bug,
+it is the cache's definition, so the guard cannot be a heuristic: purity is
+statically undecidable, and guessing would give false confidence. The
+contract is declarative — the step declares its own effects
+(`@tl.step("save", effects="db.write")`, `effects="pure"`, `effects = "..."`
+in a preset's `[[steps]]`; None = undeclared), the declaration lives in
+`Step.meta["effects"]` and survives rename/presets.
 
-Cache применяет декларацию через `on_effects`:
-- `"skip"` (дефолт): заявленно-эффектный шаг никогда не обслуживается из
-  кэша и не пишется в него. Step-level — шаг просто исполняется мимо кэша;
-  run-level — ран с таким шагом не сохраняется (а несохранённый ран не может
-  стать хитом: guard работает даже при том, что on_run_start шагов ещё не
-  видит). Событие `cache_effects_bypass` + метрика говорят почему.
-- `"raise"`: комбинация «кэш поверх эффектного шага» — конфигурационная
-  ошибка, ран падает с объяснением. Для пайплайнов, где пропущенная запись
-  недопустима.
-- `"allow"`: явный opt-in (идемпотентные эффекты).
+Cache applies the declaration via `on_effects`:
+- `"skip"` (default): a declared-effectful step is never served from the
+  cache and never written to it. Step-level — the step simply executes past
+  the cache; run-level — a run containing such a step is not stored (and a
+  run that was never stored can never become a hit: the guard works even
+  though on_run_start cannot see the steps yet). A `cache_effects_bypass`
+  event + metric say why.
+- `"raise"`: the combination "cache over an effectful step" is a
+  configuration error; the run fails with an explanation. For pipelines
+  where a skipped write is unacceptable.
+- `"allow"`: an explicit opt-in (idempotent effects).
 
-Незаявленные шаги кэшируются как раньше: guard доверяет декларациям, а не
-гадает — иначе любой callable пришлось бы считать эффектным и кэш умер бы.
+Undeclared steps are cached as before: the guard trusts declarations rather
+than guessing — otherwise every callable would have to be presumed
+effectful and the cache would be dead on arrival.
 
 ### Line-level lineage
-После каждого шага difflib сравнивает строковое представление артефакта с
-предыдущим: equal → carry (запись и её происхождение сохраняются), replace →
-попарный подбор по similarity ≥ 0.5 → modify (с parent-ссылкой) либо
-generate, insert → generate, delete → drop (фиксируется за шагом).
-Получается ровно git-blame-модель: для каждой строки финального вывода
-известны последний автор, корневой источник и вся цепочка предков
-(`blame()/trace()/to_jsonl()`). `extract="answer"` наводит леджер на нужное
-поле словарного payload. Сложность O(шаги × строки²) в худшем случае —
-приемлемо для текстовых артефактов; порог настраивается.
+After every step, difflib compares the textual form of the artifact against
+the previous version: equal → carry (the record and its origin are kept),
+replace → pairwise matching by similarity ≥ 0.5 → modify (with a parent
+link) or generate, insert → generate, delete → drop (recorded against the
+step). The result is exactly the git-blame model: for every line of the
+final output you know the last writer, the root origin and the full ancestry
+chain (`blame()/trace()/to_jsonl()`). `extract="answer"` points the ledger
+at the right field of a dict payload. Worst-case complexity is
+O(steps × lines²) — acceptable for textual artifacts; the threshold is
+tunable.
 
-### Три lineage, три механизма
-Edit lineage (кто написал строку) — difflib, детерминирован, бесплатен,
-включён по умолчанию. Evidence lineage (откуда пришёл контекст) — контракт
-EvidenceChunk (text + source + span + score): свой ретривер отдаёт провенанс
-явно, чужие doc-объекты адаптируются через from_doc — угадывание это
-fallback, а не интерфейс. str(chunk) = text, поэтому чанки не ломают код,
-ожидающий строки; to_dict/from_dict переносят их через MCP-границу.
-retriever_step пишет чанки в EvidenceLedger, prompt_step(cite=...) рендерит
-их с [eN]-идентификаторами; всё детерминировано и бесплатно. Claim lineage (какая строка ответа чем
-подтверждена) — принципиально стохастический: связь создаёт LLM через
-citation contract, но *валидация* ссылок (citations_step) детерминирована —
-ссылка на несуществующий evidence — это violation. verify_claims_step
-(NLI/LLM-judge) — отдельная opt-in ручка, потому что жжёт токены; идёт через
-Quota и кэшируется как обычный шаг. Три леджера с общими ключами, а не один
-мега-модуль: включённость и цена каждого видны отдельно. join_blame собирает
-полную картину per-line джойном.
+### Three lineages, three mechanisms
+Edit lineage (who wrote the line) — difflib, deterministic, free, on by
+default. Evidence lineage (where the context came from) — the EvidenceChunk
+contract (text + source + span + score): your own retriever states its
+provenance explicitly, foreign doc objects are adapted via from_doc —
+guessing is the fallback, not the interface. str(chunk) = text, so chunks
+don't break code that expects strings; to_dict/from_dict carry them across
+the MCP boundary. retriever_step writes chunks into the EvidenceLedger,
+prompt_step(cite=...) renders them with [eN] identifiers; all deterministic
+and free. Claim lineage (which answer line is backed by what) is
+fundamentally stochastic: the link is created by the LLM through the
+citation contract, but *validating* the links (citations_step) is
+deterministic — a citation of nonexistent evidence is a violation.
+verify_claims_step (NLI / LLM judge) is a separate opt-in knob because it
+burns tokens; it goes through Quota and is cached like any other step. Three
+ledgers with shared keys rather than one mega-module: the cost and the
+on/off state of each are visible separately. join_blame assembles the full
+per-line picture with a join.
 
-Статусы строк разделяют **факты** и **вердикты**. `uncited_line` — структурный
-факт, не обвинение: заголовки, переходные фразы, summary и стилевые обороты
-легитимно ничего не цитируют (`exempt=` — allowlist, `require=` — политика
-для остальных). Вердикты — `supported` / `low_confidence_support` /
-`unsupported` / `contradicted` — выносит только верификатор (score, строка
-или NLI-словарь `{"verdict", "confidence"}`; скаляр не различает «нет
-поддержки» и «слабую поддержку», поэтому score ниже threshold — это
-low_confidence_support, а unsupported/contradicted требуют вердиктного
-верификатора). «Галлюцинация» — вывод из unsupported/contradicted, а не факт
-отсутствия цитаты. `fail_on=` выбирает, какие вердикты считаются violations.
+Line statuses keep **facts** and **verdicts** apart. `uncited_line` is a
+structural fact, not an accusation: headers, transitions, summaries and
+style-mandated phrasing legitimately cite nothing (`exempt=` is the
+allowlist, `require=` is the policy for the rest). Verdicts — `supported` /
+`low_confidence_support` / `unsupported` / `contradicted` — are issued only
+by the verifier (a score, a string, or an NLI-style dict
+`{"verdict", "confidence"}`; a scalar cannot distinguish "no support" from
+"weak support", so a score below the threshold means low_confidence_support,
+while unsupported/contradicted require a verdict-capable verifier).
+"Hallucination" is a conclusion drawn from unsupported/contradicted — never
+from the mere absence of a citation. `fail_on=` selects which verdicts count
+as violations.
 
 ### Control plane / data plane
-Payload — управляющая плоскость, остаётся маленьким словарём. Тяжёлое (корпуса,
-эмбеддинги, отчёты) живёт в ArtifactStore и ходит по ссылке (ArtifactRef).
-Handle — это lease, не reference: TTL + вытеснение по капам сессии,
-ArtifactExpired — штатный случай, а не баг. Перезапуск воссоздаёт артефакт
-только если flow **replayable**: те же входы/конфиг/источники, стохастические
-шаги закэшированы или зафиксированы. Replayability — свойство конкретного
-flow, а не гарантия store (run-level Cache — самый дешёвый способ сделать
-LLM-flow replayable в пределах TTL кэша); иначе вызывающий обязан обработать
-истечение явно: больший TTL, персист вывода или принять потерю. Сессионный
-namespace, удаляемый целиком, — сборщик мусора
-для данных, чьи потребители (агенты) живут вне процесса и невидимы для
-refcounting. Инвариант ядра: штатные middleware не удерживают версии payload
-между шагами (в памяти живут 1–2 версии независимо от длины конвейера);
-закреплён weakref-тестом. Snapshots — единственный легальный способ его
-нарушить, осознанно. Arrow/Parquet-бэкенд — это плагин kind=store, не ядро.
+The payload is the control plane and stays a small dict. Heavy data
+(corpora, embeddings, reports) lives in the ArtifactStore and travels by
+reference (ArtifactRef). A handle is a lease, not a reference: TTL +
+eviction by session caps; ArtifactExpired is a normal condition, not a bug.
+A re-run re-creates the artifact only if the flow is **replayable**: same
+inputs/config/sources, stochastic steps cached or pinned. Replayability is a
+property of the specific flow, not a guarantee of the store (a run-level
+Cache is the cheapest way to make an LLM flow replayable within the cache
+TTL); otherwise the caller must handle expiry explicitly — a longer TTL,
+persisting the output, or accepting the loss. A session namespace dropped
+wholesale is the garbage collector for data whose consumers (agents) live
+outside the process and are invisible to refcounting. Core invariant: stock
+middleware never retain payload versions between steps (1–2 versions are
+alive at any moment regardless of pipeline length); pinned by a weakref
+test. Snapshots is the single sanctioned way to break it, consciously. An
+Arrow/Parquet backend is a kind=store plugin, not core.
 
-### Типизированный реестр
-Ядро знает закрытый набор **builtin-слотов** (step/middleware/store/embedder/
-llm/retriever/sink/verifier) — структурные протоколы, не базовые классы. Kind
-проверяется в точке использования (слот пресета, doctor) в момент сборки:
-ошибка называет оба kind'а («registered as store, not step»). Плагины
-экспортируют манифест `{"kind:name": obj}` одним entry point; `requires =
-"throughline>=X.Y"` отсекает несовместимые без падения хоста; сломанный плагин
-попадает в `throughline components` с причиной, а не роняет discovery.
+### Typed registry
+The core knows a closed set of **builtin slots** (step/middleware/store/
+embedder/llm/retriever/sink/verifier) — structural protocols, not base
+classes. Kind is checked at the point of use (a preset slot, doctor) at
+build time: the error names both kinds ("registered as store, not step").
+Plugins export a manifest `{"kind:name": obj}` through a single entry point;
+`requires = "throughline>=X.Y"` filters out incompatible ones without
+crashing the host; a broken plugin shows up in `throughline components`
+with its reason instead of killing discovery.
 
-`store` — сознательно **umbrella kind**: за одним словом прячутся два разных
-протокола — cache store (`get/set(namespace, text)`) и artifact store
-(`put -> ref, get(ref)`). Umbrella принимает любой из двух; сабкайнды
-`store.cache` / `store.artifact` фиксируют конкретный протокол — Redis-кэш
-не artifact store, и регистрация под сабкайндом делает это проверяемым.
-Неймспейсы builtin-kind'ов (`store.*`, `step.*`, ...) зарезервированы за
-ядром: `register_kind("store.anything")` отклоняется — кастомные kinds живут
-в неймспейсе своего пакета.
-Коллизии детерминированы: builtin < plugin < local.
+`store` is deliberately an **umbrella kind**: two different protocols hide
+behind one word — the cache store (`get/set(namespace, text)`) and the
+artifact store (`put -> ref, get(ref)`). The umbrella accepts either; the
+subkinds `store.cache` / `store.artifact` pin the exact protocol — a Redis
+cache is not an artifact store, and registering under the subkind makes
+that checkable. Namespaces of builtin kinds (`store.*`, `step.*`, ...) are
+reserved for the core: `register_kind("store.anything")` is rejected —
+custom kinds live in their package's namespace.
+Collisions are deterministic: builtin < plugin < local.
 
-Закрыты слоты, но не таксономия: плагин может ввести свой namespaced-kind
-(`acme.reranker`) — ядро его каталогизирует (resolve, components), но не
-энфорсит, пока автор kind'а не объявил протокол через
-`register_kind(kind, check=..., shape=...)`. Голый неизвестный kind
-отклоняется при регистрации с подсказкой про namespacing — опечатки падают
-громко, расширение остаётся открытым. Namespace гарантирует, что кастомный
-kind никогда не столкнётся с текущим или будущим builtin-слотом. Принцип:
-строгость в точке использования, открытость в точке определения.
+The slots are closed, but the taxonomy is not: a plugin may introduce its
+own namespaced kind (`acme.reranker`) — the core catalogs it (resolve,
+components) but enforces nothing until the kind's author declares a protocol
+via `register_kind(kind, check=..., shape=...)`. A bare unknown kind is
+rejected at registration with a namespacing hint — typos fail loudly,
+extension stays open. The namespace guarantees a custom kind can never
+collide with a current or future builtin slot. The principle: strict at the
+point of use, open at the point of definition.
 
-### Duck typing, который объясняет себя
-Неявность при использовании, явность при отказе: wrap() падает в момент
-обёртки (не при первом вызове) с полной трассой детекции — что перебирали,
-что у объекта есть, как форсировать метод. explain() показывает решение до
-запуска; `throughline doctor` прогоняет резолв+детекцию+kind-чеки по всему
-пресету без исполнения. StrictOutputs ловит «упало не там, где причина»:
-чужой объект (забытый unwrap=) именуется на шаге, который его произвёл, с
-точным путём до нарушителя (`$.results[0].meta`). Контракт «plain data»
-формален: скаляры + dict/list/tuple рекурсивно (cycle-safe, бюджет
-max_nodes с событием о трункации) + ArtifactRef/EvidenceChunk + свои типы
-через `allow=`; скоупинг `step=` по fnmatch; early-returned output, минующий
-on_step_end по контракту EarlyReturn, проверяется в on_run_end.
+### Duck typing that explains itself
+Implicit while it works, explicit when it does not: wrap() fails at wrap
+time (not on the first call) with the full detection trace — what was
+tried, what the object actually has, how to force a method. explain() shows
+the decision before anything runs; `throughline doctor` runs
+resolution+detection+kind checks across a whole preset without executing
+it. StrictOutputs catches "it crashed far from the cause": a foreign object
+(a forgotten `unwrap=`) is named at the step that produced it, with the
+exact path to the offender (`$.results[0].meta`). The "plain data" contract
+is formal: scalars + dict/list/tuple recursively (cycle-safe, a max_nodes
+budget with a truncation event) + ArtifactRef/EvidenceChunk + your own
+types via `allow=`; `step=` scoping by fnmatch; early-returned output,
+which bypasses on_step_end per the EarlyReturn contract, is checked in
+on_run_end.
 
-### Граница агент ↔ flow (MCP — опционально, contrib)
-Сама *граница* — архитектурное решение ядра; MCP — лишь один её транспорт,
-поэтому живёт в `throughline.contrib.mcp` и ядром не импортируется. Принципы
-границы: никакого общего мутабельного стейта между контурами — всегда
-сериализованный снапшот. Вход: аргументы тула = payload (JSON), валидируется
-middleware самого flow. Выход: проекция Result (output + метрики + lineage
-stats) под жёстким байтовым бюджетом; негабарит уезжает в ArtifactStore и
-возвращается handle'ом с превью — гигабайт не попадает в контекст модели by
-construction (get_artifact отдаёт слайсы). trace_id агента штампует все
-события рана (TracedEventBus) — один трейс от рассуждения агента до каждого
-шага. Обратное направление адаптера не требует: агент внутри flow — это
-tl.wrap(agent), его бюджет считает Quota, вывод видит lineage. Транспорт —
-stdio JSON-RPC, написан руками (~сотня строк), zero-dep; handle() — чистая
-тестируемая функция. Другой serving-слой (HTTP, очередь) строится на той же
-публичной поверхности — presets, Flow.run, проекция Result, store — не
-трогая ни ядро, ни MCP.
+### The agent ↔ flow boundary (MCP — optional, contrib)
+The *boundary* itself is a core architectural decision; MCP is merely one
+transport for it, which is why it lives in `throughline.contrib.mcp` and is
+never imported by the core. Boundary principles: no shared mutable state
+between the two sides — always a serialized snapshot. Inbound: tool
+arguments are the payload (JSON), validated by the flow's own middleware.
+Outbound: a projection of the Result (output + metrics + lineage stats)
+under a hard byte budget; oversized data goes to the ArtifactStore and
+returns as a handle with a preview — a gigabyte cannot reach the model
+context by construction (get_artifact serves slices). The agent's trace_id
+stamps every event of the run (TracedEventBus) — one trace from the agent's
+reasoning down to every step of the graph. The transport is stdio JSON-RPC,
+written by hand (~a hundred lines), zero-dep; handle() is a pure, testable
+function. Another serving layer (HTTP, a queue) builds on the same public
+surface — presets, Flow.run, the Result projection, the store — touching
+neither the core nor MCP.
 
-### Пресеты
-`tomllib` + поиск по `./presets`, `$THROUGHLINE_PRESETS`, builtin. `extends`
-делает deep-merge config/middleware; steps заменяются целиком (порядок шагов
-— это суть пайплайна, мержить его опасно). `[steps.with]` (даже пустая
-таблица) означает «вызови фабрику», отсутствие — «это уже готовый step».
-Middleware включаются присутствием таблицы, выключаются `enabled = false`,
-сторонние — `uses = "pkg.mod:Class"`.
+### Presets
+`tomllib` + lookup across `./presets`, `$THROUGHLINE_PRESETS`, builtin.
+`extends` deep-merges config/middleware; steps are replaced wholesale (step
+order is the essence of the pipeline — merging it is dangerous).
+`[steps.with]` (even an empty table) means "call the factory"; its absence
+means "this is already a ready step". Middleware are enabled by the presence
+of their table, disabled with `enabled = false`; third-party ones plug in
+with `uses = "pkg.mod:Class"`.
 
-### Онбординг третьих сторон — три пути
-1. **wrap()/as_step** — объект уже есть в коде: одна строка.
-2. **import-path в пресете** — код не трогаем вообще: `uses = "их.модуль:вещь"`.
-3. **entry points** (`throughline.plugins`) — pip-пакет публикует компоненты,
-   реестр подхватывает их автоматически.
-Плюс конвенция dict-payload для RAG (`question/context/prompt/answer`) —
-адаптеры `rag.py` придерживаются её, поэтому ретриверы взаимозаменяемы.
+### Third-party onboarding — three paths
+1. **wrap()/as_step** — the object already exists in code: one line.
+2. **An import path in a preset** — the code is not touched at all:
+   `uses = "their.module:thing"`.
+3. **Entry points** (`throughline.plugins`) — a pip package publishes
+   components, the registry picks them up automatically.
+Plus the dict-payload convention for RAG (`question/context/prompt/answer`)
+— the `rag.py` adapters follow it, so retrievers are interchangeable.
 
 ### Async
-Ядро синхронное; корутины-шаги мостятся через `asyncio.run` (понятная ошибка,
-если снаружи уже крутится loop). Полноценный async-раннер — осознанно вне v1:
-он удваивает поверхность, а фан-аут закрывается `map_step(workers=N)`.
+The core is synchronous; coroutine steps are bridged via `asyncio.run` (with
+a clear error if a loop is already running outside). A full async runner is
+deliberately out of v1: it doubles the surface, and fan-out is covered by
+`map_step(workers=N)`.
 
-## Зарезервированные границы (future)
+## Reserved boundaries (future)
 
 ### Policy / security
-Не реализовано в v1, но граница зафиксирована сейчас, чтобы потом не ломать
-экосистему. Что сюда относится: authz на вызов инструментов (кто может
-дёргать какой flow через MCP `tools/call`), редакция PII в payload'ах и
-событиях, egress-правила (какие данные могут покинуть контур), скрининг
-prompt injection на входе.
+Not implemented in v1, but the boundary is pinned now so that the ecosystem
+does not have to be broken later. What belongs here: authz on tool
+invocation (who may call which flow through MCP `tools/call`), PII redaction
+in payloads and events, egress rules (what data may leave the perimeter),
+prompt-injection screening on input.
 
-Что фиксируется уже сегодня:
+What is fixed already today:
 
-- **Имя слота.** Bare-имя `policy` зарезервировано в реестре: кастомные
-  kinds обязаны быть namespaced, значит никакой плагин не может занять
-  `policy` до того, как ядро определит его протокол. Экосистемные
-  эксперименты живут как `acme.policy` и позже мигрируют без коллизий.
-- **Место в стеке.** Policy — *снаружи* Cache: кэш-хит обязан проходить те
-  же проверки, что и свежий ответ (закэшированный ответ, отданный без
-  authz/редакции — классическая дыра). С наблюдателями порядок зависит от
-  того, редактируются ли сами логи: policy снаружи Observe = редакция видна
-  и в событиях, внутри = события сырые. Это решение будущего протокола, обе
-  позиции легальны для middleware уже сейчас.
-- **Механизм.** Policy — это middleware (on_run_start для входного
-  скрининга, on_run_end для выходной редакции, wrap_step для пошаговых
-  правил) плюс hook в MCP `tools/call` для authz до запуска flow. Новых
-  примитивов ядра не требуется — граница уже существует, зарезервировано
-  только имя и позиция.
+- **The slot name.** The bare name `policy` is reserved in the registry:
+  custom kinds must be namespaced, so no plugin can squat `policy` before
+  the core defines its protocol. Ecosystem experiments live as `acme.policy`
+  and can migrate later without collisions.
+- **The position in the stack.** Policy sits *outside* Cache: a cache hit
+  must pass the same checks as a fresh answer (a cached response served
+  without authz/redaction is the classic hole). Relative to observers the
+  order depends on whether the logs themselves get redacted: policy outside
+  Observe = redaction is visible in events too; inside = events stay raw.
+  That is a decision for the future protocol; both positions are already
+  legal for middleware today.
+- **The mechanism.** Policy is middleware (on_run_start for input
+  screening, on_run_end for output redaction, wrap_step for per-step rules)
+  plus a hook in MCP `tools/call` for authz before the flow runs. No new
+  core primitives are required — the boundary already exists; only the name
+  and the position are reserved.
 
-## Не-цели v1
-DAG-движок общего вида (composites закрывают 90%), персистентность стейта
-(RunContext эфемерен; персистентны только артефакты в store),
-распределённое исполнение, UI. Всё это навешивается сверху, не требуя менять
-ядро — события и артефакты уже структурированы. Policy/security — см.
-«Зарезервированные границы» выше: не-цель как реализация, но граница
-зафиксирована.
+## Non-goals for v1
+A general-purpose DAG engine (composites cover 90%), state persistence
+(RunContext is ephemeral; only artifacts in the store persist), distributed
+execution, a UI. All of it can be layered on top without changing the core —
+events and artifacts are already structured. Policy/security — see
+"Reserved boundaries" above: a non-goal as an implementation, but the
+boundary is pinned.
 
-## Проверка
-`tests/` — 253 юнит- и интеграционных тестов на stdlib `unittest`
-(ядро, модули, три lineage, store с lease-семантикой, типизированный реестр,
-диагностика wrap/doctor, weakref-инвариант удержания payload, MCP-протокол,
-пресеты с extends, CLI end-to-end).
-`examples/demo_rag.py` — офлайн-демо всех модулей разом.
+## Verification
+`tests/` — unit and integration tests on stdlib `unittest`
+(core, modules, the three lineages, the store with lease semantics, the
+typed registry, wrap/doctor diagnostics, the weakref payload-retention
+invariant, the MCP protocol, presets with extends, CLI end-to-end).
+`examples/demo_rag.py` — an offline demo of every module at once.

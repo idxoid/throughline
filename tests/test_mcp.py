@@ -109,13 +109,27 @@ class AgentCallsFlowTests(unittest.TestCase):
 
     def test_expired_handle_is_a_readable_tool_error(self):
         server = _make_server()
+        gone = f"{server.session}/away"  # this server's session, but expired
         response = _call(server, "tools/call",
-                         {"name": "get_artifact",
-                          "arguments": {"artifact": "gone/away"}})
+                         {"name": "get_artifact", "arguments": {"artifact": gone}})
         self.assertTrue(response["result"]["isError"])
         note = json.loads(response["result"]["content"][0]["text"])
         self.assertIn("re-run", note["error"])
-        self.assertEqual(note["expired"], "gone/away")
+        self.assertEqual(note["expired"], gone)
+
+    def test_foreign_session_handles_are_not_served(self):
+        # a shared store must not be readable by session-guessing: only
+        # handles minted by this server's own session come back
+        store = MemoryArtifactStore()
+        secret = store.put("other tenant's data", session="tenant-b")
+        server = _make_server(store=store)
+        response = _call(server, "tools/call",
+                         {"name": "get_artifact",
+                          "arguments": {"artifact": secret.id}})
+        self.assertTrue(response["result"]["isError"])
+        note = json.loads(response["result"]["content"][0]["text"])
+        self.assertIn("not part of this server session", note["error"])
+        self.assertNotIn("other tenant", json.dumps(response))
 
 
 class ProjectResultTests(unittest.TestCase):
@@ -157,6 +171,14 @@ class StdioTransportTests(unittest.TestCase):
         self.assertEqual(responses[0]["id"], 1)
         # session namespace dropped on shutdown: the handle is now a dead lease
         self.assertEqual(len(server.store), 0)
+
+    def test_invalid_json_gets_a_parse_error_not_silence(self):
+        server = _make_server()
+        stdin = io.StringIO("this is not json\n")
+        stdout = io.StringIO()
+        server.serve_stdio(stdin=stdin, stdout=stdout)
+        response = json.loads(stdout.getvalue())
+        self.assertEqual(response["error"]["code"], -32700)
 
 
 if __name__ == "__main__":

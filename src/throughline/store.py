@@ -29,6 +29,7 @@ kind covering both this protocol and cache stores; see registry kinds).
 
 from __future__ import annotations
 
+import itertools
 import json
 import threading
 import time
@@ -71,13 +72,28 @@ class ArtifactRef:
         return f"ArtifactRef({self.id!r}, meta={self.meta!r})"
 
 
-def _approx_size(value: Any) -> int:
-    if isinstance(value, (str, bytes)):
-        return len(value)
+_SIZE_SAMPLE = 32
+
+
+def _json_len(value: Any) -> int:
     try:
         return len(json.dumps(value, ensure_ascii=False, default=str))
     except (TypeError, ValueError):
         return len(str(value))
+
+
+def _approx_size(value: Any) -> int:
+    """Cheap size estimate for lease accounting. Exact for str/bytes and
+    small containers; extrapolated from a sample for large ones — put() must
+    not serialize a gigabyte artifact just to learn roughly how big it is."""
+    if isinstance(value, (str, bytes)):
+        return len(value)
+    if isinstance(value, (list, tuple)) and len(value) > _SIZE_SAMPLE:
+        return _json_len(list(value[:_SIZE_SAMPLE])) * len(value) // _SIZE_SAMPLE
+    if isinstance(value, dict) and len(value) > _SIZE_SAMPLE:
+        sample = dict(itertools.islice(value.items(), _SIZE_SAMPLE))
+        return _json_len(sample) * len(value) // _SIZE_SAMPLE
+    return _json_len(value)
 
 
 class MemoryArtifactStore:
