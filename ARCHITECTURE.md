@@ -264,6 +264,20 @@ types via `allow=`; `step=` scoping by fnmatch; early-returned output,
 which bypasses on_step_end per the EarlyReturn contract, is checked in
 on_run_end.
 
+### Structured output: regeneration is a step property
+"Re-ask the LLM until the JSON is valid" looks like Validate + Retry, but
+does not compose: per-step Validate raises in `on_step_end`, which runs
+AFTER the `wrap_step` onion (see the flow contract above) — Retry's wrapper
+has already returned and never sees the raise. This is not a bug to fix by
+moving hooks inside the onion: `on_step_end` is where *observers* of a
+step's outcome belong, and pulling it inside would re-run observers on every
+retry attempt. The conclusion is pinned in tests/test_structured.py:
+regeneration must originate INSIDE the retried step, so `structured_step`
+fuses generator + parse + schema check into one step and `Retry(step=...)`
+re-runs the generation. `json_step` stays separate for the deterministic
+case (parse an existing key, warn or raise); both speak Validate's schema
+dialect via the shared `check_schema`.
+
 ### The agent ↔ flow boundary (MCP — optional, contrib)
 The *boundary* itself is a core architectural decision; MCP is merely one
 transport for it, which is why it lives in `throughline.contrib.mcp` and is
@@ -280,6 +294,15 @@ written by hand (~a hundred lines), zero-dep; handle() is a pure, testable
 function. Another serving layer (HTTP, a queue) builds on the same public
 surface — presets, Flow.run, the Result projection, the store — touching
 neither the core nor MCP.
+
+The client direction lives in `throughline.adapters.mcp` — adapters bring
+components INTO flows, so it is not contrib. Same wire format (newline-
+delimited JSON-RPC over a subprocess's stdio), same boundary principle
+(arguments in, serialized result out), and the symmetry is load-bearing:
+`throughline mcp` doubles as the integration-test server for the client
+(tests/test_mcp_client.py), so a wire-format drift breaks the suite, not a
+user. Tool-level `isError` results raise — a failed tool is a failed step,
+eligible for Retry like any other.
 
 ### Presets
 `tomllib` + lookup across `./presets`, `$THROUGHLINE_PRESETS`, builtin.

@@ -11,6 +11,7 @@ from .debug import Snapshots, StrictOutputs
 from .citations import (ClaimLedger, ClaimRecord, EvidenceChunk, EvidenceLedger,
                         EvidenceRecord, citations_step, evidence_ledger,
                         verify_claims_step)
+from .structured import json_step, parse_json, structured_step
 
 __all__ = [
     "Metrics", "MetricsMiddleware",
@@ -23,4 +24,5 @@ __all__ = [
     "Snapshots", "StrictOutputs",
     "EvidenceChunk", "EvidenceLedger", "EvidenceRecord", "ClaimLedger", "ClaimRecord",
     "citations_step", "evidence_ledger", "verify_claims_step",
+    "json_step", "parse_json", "structured_step",
 ]

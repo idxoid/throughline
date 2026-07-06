@@ -273,6 +273,32 @@ llm = anthropic_chat(model="claude-opus-4-8", system="Answer briefly.")
 any_llm = from_callable(lambda prompt: my_client.complete(prompt))  # provider-agnostic
 ```
 
+### Structured output: parse, validate, regenerate
+
+```python
+from throughline.modules import json_step, structured_step, Retry
+
+flow = tl.Flow([llm, json_step(schema={"type": "object", "required": ["name"]})])
+```
+
+`json_step` parses `payload["answer"]` tolerantly (code fences, prose-wrapped
+JSON) and checks it against the same schema dialect `Validate` speaks;
+`on_fail="warn"` records a violation instead of raising.
+
+When an invalid answer should **regenerate**, parsing must live inside the
+retried step — per-step `Validate` raises in `on_step_end`, which runs
+*after* the `wrap_step` onion, so `Retry` never sees it (this non-composition
+is pinned in `tests/test_structured.py`). `structured_step` fuses
+generator + parse + schema into one step:
+
+```python
+flow = tl.Flow(
+    [structured_step(llm, schema={"type": "object", "required": ["name"]},
+                     name="extract")],
+    middleware=[Retry(attempts=3, step="extract")],   # re-runs the LLM
+)
+```
+
 ## Three lineages
 
 throughline tracks provenance at three levels, each with its own mechanism and
@@ -488,6 +514,32 @@ The reverse direction needs no adapter at all: an agent inside a flow is just
 lineage, like any other step. In code:
 `throughline.contrib.mcp.MCPServer(flows={...}, presets=[...])`;
 `project_result()` is reusable on its own.
+
+### MCP servers as steps (client direction)
+
+`throughline.adapters.mcp` is the mirror image — any external MCP server
+(stdio) becomes a step, so the existing ecosystem of MCP tools plugs into
+flows, budgeted by `Quota` and cached like any component. Zero dependencies:
+subprocess + newline-delimited JSON-RPC.
+
+```python
+from throughline.adapters.mcp import MCPClient, tool_step
+
+client = MCPClient(["python", "-m", "some_mcp_server"])
+flow = tl.Flow([
+    tool_step(client, "search_docs", params=["question"], out_key="context"),
+    prompt_step("Context:\n{context}\n\nQ: {question}"),
+    llm,
+])
+```
+
+A dict payload becomes the tool arguments (`params=` selects keys, `args=`
+adds static ones; `build=` — a `payload -> arguments` callable or its import
+path — replaces the mapping when the server's schema differs from the
+payload shape). The result — `structuredContent` when the server provides
+it, else text — lands at `out_key`, post-processed by `unwrap=`. In presets,
+`mcp_tool` owns its client: `uses = "throughline.adapters.mcp:mcp_tool"` with
+`command = [...]` and `tool = "..."` in `[steps.with]`.
 
 ## Reserved boundary: policy / security (future)
 
