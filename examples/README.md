@@ -179,7 +179,7 @@ The rest of `examples/` shows the control plane from other angles — run
 | [`report-gen`](presets/report-gen.toml) | Artifact-backed report generation | slots, map steps, report lineage, artifact refs |
 | [`data-qa`](presets/data-qa.toml) | Data quality assistant | deterministic checks, step validation, strict report schema |
 | [`doc-extract`](presets/doc-extract.toml) | Document extraction pipeline | parser slot, page map, retryable structured extraction |
-| [`support-agent`](presets/support-agent.toml) | Guarded support bot | policy layer: ingress screening, egress PII redaction, graceful deny, audit |
+| [`support-agent`](presets/support-agent.toml) | Guarded support bot | intent routing, policy screening/redaction, quota fallback, audit |
 | [`surgical_context/`](surgical_context/) | Code intelligence / change impact | file:line citations, code QA, real integration |
 
 ```console

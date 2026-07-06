@@ -1,9 +1,9 @@
-# Example support-bot preset with the policy layer: ingress screening,
-# egress PII redaction, graceful deny and an audit ledger.
+# Example support-agent preset with policy, branching and quota fallback.
+# Payload: {"message", "history", "user_id"}.
 # Run from the repository root:
 #   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run support-agent -i "how do I reset my password?" --json
 name = "support-agent"
-description = "Support bot guarded by the policy layer: screen -> answer -> redact."
+description = "Support agent: classify -> branch FAQ/RAG/escalate -> format, guarded by policy and quota."
 
 [[steps]]
 uses = "examples.support_agent:normalize"
@@ -11,28 +11,61 @@ name = "normalize"
 effects = "pure"
 
 [[steps]]
-uses = "examples.support_agent:answer"
-name = "answer"
+uses = "examples.support_agent:classify_intent"
+name = "classify"
+effects = "pure"
+
+[[steps]]
+name = "route"
+[steps.branch]
+selector = "intent"
+default = "examples.support_agent:escalate"
+[steps.branch.routes]
+faq = "examples.support_agent:faq_answer"
+rag = "examples.support_agent:rag_answer"
+escalate = "examples.support_agent:escalate"
+
+[[steps]]
+uses = "examples.support_agent:format_response"
+name = "format"
 effects = "pure"
 
 # Table order is the middleware order: observers outside Policy (a deny must
-# be visible in metrics and events), Policy outside Cache (a cache hit must
-# pass the same egress checks as a fresh answer).
+# be visible in metrics and events). Validate is outside Policy so final
+# schema validation sees redacted/fallback output.
 [middleware.observe]
 
 [middleware.metrics]
+
+[middleware.validate]
+scope = "final"
+on_fail = "raise"
+[middleware.validate.schema]
+type = "object"
+required = ["reply", "action"]
+additionalProperties = false
+[middleware.validate.schema.properties.reply]
+type = "string"
+[middleware.validate.schema.properties.action]
+type = "string"
+enum = ["reply", "escalate"]
 
 [middleware.policy]
 ingress = ["examples.support_agent:screen_injection"]
 egress = ["examples.support_agent:redact_email_addresses"]
 on_deny = "return"
-fallback = { answer = "I can't help with that — connecting you with a human operator." }
+fallback = { reply = "I can't help with that - connecting you with a human operator.", action = "escalate" }
 
-[middleware.cache]
-key = "question"
-ttl = 600
+[middleware.retry]
+attempts = 2
+backoff = 0.0
+step = "route"
 
 [middleware.quota]
 scope = "run"
-[middleware.quota.limits]
-"llm.calls" = 3
+max_cost = 0.001
+on_exceed = "return"
+fallback = { reply = "Передаю оператору.", action = "escalate" }
+[middleware.quota.cost]
+"llm.input_tokens" = 0.000001
+"llm.output_tokens" = 0.000003

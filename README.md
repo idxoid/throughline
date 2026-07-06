@@ -114,7 +114,7 @@ These examples are the fastest way to see what the control plane is for:
 | `report-gen` | Artifact-backed report generation | slots, map steps, report lineage, artifact refs |
 | `data-qa` | Data quality assistant | deterministic checks, step validation, strict report schema |
 | `doc-extract` | Document extraction pipeline | parser slot, page map, retryable structured extraction |
-| `support-agent` | Guarded support bot | policy layer: ingress screening, egress PII redaction, graceful deny, audit |
+| `support-agent` | Guarded support bot | intent routing, policy screening/redaction, quota fallback, audit |
 | `surgical_context` | Code intelligence / change impact | file:line citations, code QA, real integration |
 
 ```bash
@@ -666,9 +666,10 @@ on_deny = "return"
 fallback = { answer = "I can't help with that — connecting you with an operator." }
 ```
 
-The `support-agent` example preset is the live showcase; phase 2 (per-step
-checkpoints, MCP `tools/call` authz, event redaction in Observe sinks) is
-pinned in ARCHITECTURE's reserved boundaries.
+The `support-agent` example preset is the live showcase: intent routing,
+FAQ/RAG/escalation branches, policy screening/redaction and quota fallback.
+Phase 2 (per-step checkpoints, MCP `tools/call` authz, event redaction in
+Observe sinks) is pinned in ARCHITECTURE's reserved boundaries.
 
 ## Composites & custom middleware
 
