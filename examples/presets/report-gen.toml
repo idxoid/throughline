@@ -1,0 +1,78 @@
+# Example report generator.
+# Contract: {"spec", "period", "data": ArtifactRef}; for CLI demos, data may be a CSV path.
+# The input data stays in the artifact store; the flow carries aggregates and section text.
+# Run from the repository root:
+#   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run report-gen --json-input -i '{"spec":"sales performance","period":"2026-Q2","data":"examples/data/sales.csv"}' --json --blame
+name = "report-gen"
+description = "Report generator: artifact-backed data -> planned sections -> mapped LLM sections -> rendered report."
+
+[slots.fetcher]
+kind = "step"
+description = "User data fetch/profile step. Must keep raw data out of the control plane."
+default = "examples.report_gen:fetch_data"
+
+[[steps]]
+uses = "@fetcher"
+name = "fetch-data"
+effects = "pure"
+
+[[steps]]
+uses = "examples.report_gen:plan_sections"
+name = "plan-sections"
+effects = "pure"
+
+[[steps]]
+map = "examples.report_gen:write_section"
+name = "write-sections"
+workers = 1
+effects = "pure"
+[steps.with]
+fail_first = true
+
+[[steps]]
+uses = "examples.report_gen:assemble_report"
+name = "assemble"
+effects = "pure"
+
+[[steps]]
+uses = "examples.report_gen:render_report"
+name = "render"
+effects = "store.write"
+[steps.with]
+format = "md"
+
+[middleware.observe]
+
+[middleware.metrics]
+
+[middleware.retry]
+attempts = 3
+backoff = 0.0
+step = "write-sections"
+
+[middleware.lineage]
+extract = "report"
+
+[middleware.validate]
+scope = "final"
+on_fail = "raise"
+[middleware.validate.schema]
+type = "object"
+required = ["report", "report_ref", "format", "section_count"]
+[middleware.validate.schema.properties.report]
+type = "string"
+[middleware.validate.schema.properties.report_ref]
+type = "object"
+required = ["$artifact", "meta"]
+[middleware.validate.schema.properties.format]
+type = "string"
+enum = ["md", "html"]
+[middleware.validate.schema.properties.section_count]
+type = "integer"
+
+[middleware.quota]
+scope = "run"
+max_cost = 0.03
+[middleware.quota.cost]
+"llm.input_tokens" = 0.000001
+"llm.output_tokens" = 0.000003

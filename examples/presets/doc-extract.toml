@@ -1,0 +1,92 @@
+# Example document extraction pipeline.
+# Contract: {"document": ArtifactRef}; for CLI demos, document may be a text path.
+# Real PDF parsing is a user/plugin concern: fill @parser with your parser step.
+# Run from the repository root:
+#   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run doc-extract --json-input -i '{"document":"examples/documents/invoice.txt"}' --json
+name = "doc-extract"
+description = "Document extraction: parser slot -> map pages -> retryable structured extraction -> strict JSON."
+
+[slots.parser]
+kind = "step"
+description = "Document/PDF parser that turns payload.document into page payloads."
+default = "examples.doc_extract:parse_text_document"
+
+[[steps]]
+uses = "@parser"
+name = "parse-split"
+effects = "pure"
+
+[[steps]]
+map = "examples.doc_extract:extract_page"
+name = "extract"
+workers = 1
+effects = "pure"
+[steps.with]
+fail_first = true
+
+[[steps]]
+uses = "examples.doc_extract:merge_pages"
+name = "merge"
+effects = "pure"
+
+[middleware.observe]
+
+[middleware.metrics]
+
+[middleware.retry]
+attempts = 3
+backoff = 0.0
+step = "extract"
+
+# Gate, not regeneration: Retry sees invalid JSON because structured_step
+# raises from inside the mapped extract step. Validate runs after that as a
+# contract guard over the parsed per-page objects — a raise from this hook
+# is NOT retried (see ARCHITECTURE, "regeneration is a step property").
+[middleware.validate_extract]
+uses = "throughline.modules.validate:Validate"
+scope = "step"
+step = "extract"
+at = "output"
+on_fail = "raise"
+[middleware.validate_extract.schema]
+type = "array"
+[middleware.validate_extract.schema.items]
+type = "object"
+required = ["document", "page", "fields", "entities"]
+
+[middleware.validate]
+scope = "final"
+on_fail = "raise"
+[middleware.validate.schema]
+type = "object"
+required = ["document", "page_count", "fields", "entities", "pages"]
+additionalProperties = false
+[middleware.validate.schema.properties.document]
+type = "string"
+[middleware.validate.schema.properties.page_count]
+type = "integer"
+[middleware.validate.schema.properties.fields]
+type = "object"
+required = ["invoice_number", "date", "total", "currency"]
+[middleware.validate.schema.properties.fields.properties.invoice_number]
+type = ["string", "null"]
+[middleware.validate.schema.properties.fields.properties.date]
+type = ["string", "null"]
+[middleware.validate.schema.properties.fields.properties.total]
+type = ["number", "null"]
+[middleware.validate.schema.properties.fields.properties.currency]
+type = ["string", "null"]
+[middleware.validate.schema.properties.entities]
+type = "array"
+[middleware.validate.schema.properties.entities.items]
+type = "object"
+required = ["type", "value", "page"]
+[middleware.validate.schema.properties.pages]
+type = "array"
+
+[middleware.quota]
+scope = "run"
+max_cost = 0.02
+[middleware.quota.cost]
+"llm.input_tokens" = 0.000001
+"llm.output_tokens" = 0.000003

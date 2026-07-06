@@ -165,6 +165,37 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(cached.output["report"], report)
         self.assertEqual(cached.metrics["counters"]["cache.hits"], 1)
 
+    def test_example_doc_extract_preset_end_to_end(self):
+        from examples.doc_extract import seed_document
+
+        flow = load_preset("examples/presets/doc-extract.toml")
+        ref = seed_document()
+        result = flow.run({"document": ref})
+        self.assertEqual(result.output["fields"]["invoice_number"], "INV-2026-0042")
+        self.assertEqual(result.output["fields"]["total"], 1280.50)
+        self.assertEqual(result.output["page_count"], 2)
+        self.assertEqual(result.violations, [])
+        self.assertEqual(result.metrics["counters"]["retries"], 1)
+        self.assertGreater(result.metrics["counters"]["llm.calls"], 2)
+
+    def test_example_report_gen_preset_end_to_end(self):
+        from examples.report_gen import STORE, seed_data
+
+        flow = load_preset("examples/presets/report-gen.toml")
+        ref = seed_data()
+        result = flow.run({"spec": "sales performance",
+                           "period": "2026-Q2",
+                           "data": ref})
+        self.assertIn("## Executive Summary", result.output["report"])
+        self.assertIn("$22,600", result.output["report"])
+        self.assertIn("$artifact", result.output["report_ref"])
+        self.assertEqual(STORE.get(result.output["report_ref"]["$artifact"]),
+                         result.output["report"])
+        self.assertNotIn("rows", result.output)
+        self.assertEqual(result.metrics["counters"]["retries"], 1)
+        blame_steps = {entry["step"] for entry in result.lineage.blame()}
+        self.assertIn("write-sections", blame_steps)
+
 
 class BuildFlowUnit(unittest.TestCase):
     def test_build_flow_minimal_dict(self):

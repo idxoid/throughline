@@ -1,0 +1,9 @@
+date,region,product,customer,revenue
+2026-04-03,North,Platform,Acme Co,4200
+2026-04-15,South,Platform,Globex,3100
+2026-05-02,North,Services,Acme Co,1800
+2026-05-12,West,Platform,Initech,5100
+2026-05-29,East,Services,Umbrella,2200
+2026-06-08,West,Support,Initech,1600
+2026-06-21,South,Support,Globex,900
+2026-06-27,North,Platform,Stark Industries,3700

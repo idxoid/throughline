@@ -1,0 +1,11 @@
+Vendor: Northwind Labs
+Invoice #: INV-2026-0042
+Date: 2026-06-30
+Bill To: Example Co
+Item: Platform support retainer
+Item: Usage overage review
+
+--- page ---
+Vendor: Northwind Labs
+Item: Dedicated support hours
+Total: USD 1280.50
