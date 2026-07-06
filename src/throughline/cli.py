@@ -175,7 +175,7 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="throughline",
-        description="Framework-neutral control plane for agents and LLM pipelines.")
+        description="Framework-neutral control plane for LLM/RAG/agent pipelines.")
     parser.add_argument("--version", action="version", version=f"throughline {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
 

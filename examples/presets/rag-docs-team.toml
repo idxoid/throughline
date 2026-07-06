@@ -1,0 +1,13 @@
+# Example of a *team* preset extending the docs RAG example:
+# keeps the pipeline but tightens final validation.
+# Run from this directory:
+#   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run rag-docs-team -i "how should answers cite docs?"
+name = "rag-docs-team"
+extends = "rag-docs"
+description = "Team override for rag-docs with strict final validation."
+
+[middleware.validate]
+on_fail = "raise"
+[middleware.validate.schema]
+type = "object"
+required = ["question", "context", "answer"]

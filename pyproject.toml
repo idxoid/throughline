@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "throughline"
 dynamic = ["version"]  # single source of truth: throughline.__version__
-description = "Framework-neutral control plane for agents and LLM pipelines: a zero-dependency orchestration kernel with pluggable presets, validation, metrics, observability and line-level lineage."
+description = "Framework-neutral control plane for LLM/RAG/agent pipelines: a zero-dependency orchestration kernel with pluggable presets, validation, metrics, observability and line-level lineage."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

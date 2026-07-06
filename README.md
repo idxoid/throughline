@@ -22,6 +22,20 @@ pip install throughline[anthropic] # + Claude adapter
 | **Preset**     | a TOML file describing steps + middleware + config; supports `extends` |
 | **Context**    | carried through the run; collects events, metrics and artifacts |
 
+## When to use it
+
+Use throughline when the value of your LLM system is not just the model call,
+but the controlled pipeline around it: retrieval, deterministic checks,
+structured extraction, report assembly, budgets, cache hits, and line-level
+provenance you can inspect after the fact.
+
+It is a good fit when you need to answer:
+
+- which step wrote this output line?
+- which source chunk or artifact backed this claim?
+- did validation, quota, cache, or retry change the run?
+- can I swap my retriever/parser/fetcher without rewriting the flow?
+
 ## 60-second tour
 
 ```python
@@ -64,8 +78,38 @@ $ throughline run demo --input "..." --json          # machine-readable report
 $ throughline presets                                # list discoverable presets
 $ throughline doctor demo                            # dry-check: resolve every slot, show wrap decisions
 $ throughline components                             # typed catalog: kind, source, broken plugins
-$ throughline mcp --preset demo                      # serve flows as MCP tools (stdio)
+$ throughline mcp --preset demo                      # optional contrib: serve flows as MCP tools
 ```
+
+## Example presets
+
+These examples are the fastest way to see what the control plane is for:
+
+| Preset | Use case | Shows |
+|---|---|---|
+| `rag-docs` | Internal documentation RAG | evidence lineage, citations, semantic cache, quota |
+| `report-gen` | Artifact-backed report generation | slots, map steps, report lineage, artifact refs |
+| `data-qa` | Data quality assistant | deterministic checks, step validation, strict report schema |
+| `doc-extract` | Document extraction pipeline | parser slot, page map, retryable structured extraction |
+| `surgical_context` | Code intelligence / change impact | file:line citations, code QA, real integration |
+
+```bash
+THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline presets
+
+THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. \
+python3 -m throughline run rag-docs -i "how should answers cite docs?" --json --blame
+```
+
+The first four presets are runnable offline from this repository. The
+`surgical_context` example is a live integration under
+[`examples/surgical_context/`](examples/surgical_context/) and needs its own
+external services.
+
+For deeper mechanics, jump to [presets](#presets), [slots](#slots-presets-with-holes),
+[structured output](#structured-output-parse-validate-regenerate),
+[lineage](#three-lineages), [cache and quotas](#high-load-caching--quotas),
+[artifact store](#artifact-store-control-plane-vs-data-plane), or
+[MCP](#mcp-flows-as-agent-tools-optional).
 
 ## Presets
 

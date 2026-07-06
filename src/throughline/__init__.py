@@ -1,4 +1,4 @@
-"""throughline — a framework-neutral control plane for agents and LLM pipelines.
+"""throughline — a framework-neutral control plane for LLM/RAG/agent pipelines.
 
 Not another orchestrator competing for your steps: a zero-dependency kernel
 that runs the pipeline and owns the cross-cutting concerns — validation,
