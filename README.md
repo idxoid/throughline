@@ -528,7 +528,9 @@ Recommended stack order: **observers first** (`Observe`,
 `MetricsMiddleware`), then `Policy`, then `Cache`, then everything else. The
 first middleware is the outermost layer, and a run-level cache hit
 short-circuits everything inside it — with `Cache` outermost the hit would be an invisible
-run (no metric, no event). The full reasoning is in ARCHITECTURE.
+run (no metric, no event). Final `Validate` may sit outside `Policy` when the
+public post-redaction/fallback shape must be checked. The full reasoning is in
+ARCHITECTURE.
 
 ## Artifact store: control plane vs data plane
 
@@ -649,7 +651,8 @@ flow = tl.Flow(
   redaction as a fresh answer**; a denied request fails before `on_run_end`,
   so **nothing denied is ever cached**. One hazard is documented: `Transform`
   on *ingress* feeds the cache key — strip identifying fields on egress, not
-  ingress, or keep them in `key=`.
+  ingress, or keep them in `key=`. A final public-schema `Validate` can wrap
+  `Policy` when it must check the post-redaction/fallback output.
 - **Audit is data**: every decision is an event (`policy_denied` /
   `policy_redacted` / `policy_flagged` / `policy_allowed`), a counter and a
   record in `ctx.artifacts["policy"]` — reasons only, never payloads.
