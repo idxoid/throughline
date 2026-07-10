@@ -16,9 +16,11 @@ description = "Agent workflow audit: manifest + trace + outcome fingerprint -> d
 description = "sentence -> (class, cue) | None; classes: plan/decision/assumption/action"
 default = "examples.agent_audit:heuristic_semantics"
 
-# What the lineage ledger is allowed to record. The ledger snapshots step
-# outputs at step end, BEFORE run-end policy egress transforms anything, so
-# the audit trail has to scrub at capture time.
+# What the lineage ledger is allowed to record. Lineage's run-end sweep
+# re-attributes the policy-egress redaction as an "egress" pseudo-step, but
+# that fixes only the FINAL state — earlier ledger records keep the text
+# captured at step end, so a trail that must never hold a secret scrubs at
+# capture too.
 [slots.lineage_extract]
 description = "payload -> artifact the lineage ledger may record (scrub-at-capture)"
 default = "examples.agent_audit:lineage_report"
@@ -59,9 +61,9 @@ name = "report"
 
 # Table order is the middleware order: observers outside Policy (a redaction
 # must be visible in metrics and events). Validate is outside Policy so final
-# schema validation sees the redacted output. Lineage redacts at capture time
-# via @lineage_extract — ordering alone cannot keep the blame trail clean,
-# because the ledger snapshots step outputs before egress ever runs.
+# schema validation sees the redacted output. Lineage sits outside Policy so
+# its run-end sweep can re-attribute the egress redaction; @lineage_extract
+# additionally scrubs at capture so no ledger record ever holds the secret.
 [middleware.observe]
 
 [middleware.metrics]

@@ -2,6 +2,7 @@ import unittest
 
 import throughline as tl
 from throughline.modules.lineage import LineageLedger, LineageMiddleware, lines_of
+from throughline.modules.policy import Policy, Transform
 
 
 class LinesOf(unittest.TestCase):
@@ -134,6 +135,59 @@ class MiddlewareIntegration(unittest.TestCase):
         by_text = {e["text"]: e for e in ledger.blame()}
         self.assertEqual(by_text["doc one"]["step"], "input")
         self.assertEqual(by_text["extra doc"]["step"], "append")
+
+    def test_no_egress_sweep_without_a_transform(self):
+        flow = tl.Flow([tl.as_step(lambda p: p + "\nmore", "grow")],
+                       middleware=[LineageMiddleware()])
+        ledger = flow.run("base").lineage
+        self.assertNotIn("egress", ledger.stats()["steps"])
+
+
+class EgressSweep(unittest.TestCase):
+    """The run-end sweep: an inner middleware's on_run_end transform must
+    land in the blame trail, attributed to the "egress" pseudo-step."""
+
+    @staticmethod
+    def _redact(checkpoint, value, ctx):
+        if isinstance(value, str) and "sk-live-XYZ" in value:
+            return Transform(value.replace("sk-live-XYZ", "[redacted]"),
+                             "scrubbed a leaked key")
+        return None
+
+    @staticmethod
+    def _emit(payload, ctx):
+        return "answer line\ntoken sk-live-XYZ rides here"
+
+    def test_egress_transform_lands_in_blame(self):
+        flow = tl.Flow([tl.as_step(self._emit, "emit")],
+                       middleware=[LineageMiddleware(),
+                                   Policy(egress=[self._redact])])
+        result = flow.run("q")
+        self.assertEqual(result.output,
+                         "answer line\ntoken [redacted] rides here")
+        ledger = result.lineage
+        self.assertNotIn("sk-live", "\n".join(ledger.current_lines()))
+        by_text = {e["text"]: e for e in ledger.blame()}
+        scrubbed = by_text["token [redacted] rides here"]
+        self.assertEqual(scrubbed["step"], "egress")
+        self.assertEqual(scrubbed["op"], "modify")
+        self.assertEqual(scrubbed["origin"], "emit")  # ancestry survives
+        self.assertEqual(by_text["answer line"]["step"], "emit")  # untouched
+        self.assertEqual(ledger.stats()["steps"][-1], "egress")
+
+    def test_lineage_inside_policy_misses_the_transform(self):
+        # Documented cost of the wrong order: on_run_end runs innermost
+        # first, so a ledger INSIDE Policy sweeps before the redaction and
+        # keeps the raw text. List Lineage before Policy.
+        flow = tl.Flow([tl.as_step(self._emit, "emit")],
+                       middleware=[Policy(egress=[self._redact]),
+                                   LineageMiddleware()])
+        result = flow.run("q")
+        self.assertEqual(result.output,
+                         "answer line\ntoken [redacted] rides here")
+        ledger = result.lineage
+        self.assertNotIn("egress", ledger.stats()["steps"])
+        self.assertIn("token sk-live-XYZ rides here", ledger.current_lines())
 
 
 if __name__ == "__main__":

@@ -92,11 +92,15 @@ class LineageLedger:
             for index, text in enumerate(lines_of(payload))
         ]
 
+    def current_lines(self) -> list[str]:
+        """Texts of the current artifact, in order (the heads)."""
+        return [self.records[record_id].text for record_id in self.heads]
+
     def evolve(self, step_name: str, payload: Any) -> dict:
         """Diff the new payload against current heads; re-attribute lines."""
         self.steps.append(step_name)
         old_ids = self.heads
-        old_lines = [self.records[i].text for i in old_ids]
+        old_lines = self.current_lines()
         new_lines = lines_of(payload)
         new_heads: list[str | None] = [None] * len(new_lines)
         stats = {"carry": 0, "modify": 0, "generate": 0, "drop": 0}
@@ -226,6 +230,16 @@ class LineageMiddleware(Middleware):
                  until the key appears). Default: the whole payload.
         source_label: attribution for the initial payload (default "input").
         similarity: 0..1 line-similarity threshold for modify-vs-generate.
+
+    Besides per-step evolution the ledger can end with two run-end
+    pseudo-steps: ``early_return`` when EarlyReturn substituted the output,
+    and ``egress`` when an inner middleware transformed the final output on
+    the way out — policy egress redaction is the canonical case. on_run_end
+    hooks run innermost-first, so the sweep sees such transforms only from
+    OUTSIDE the transforming middleware: list Lineage before Policy. The
+    sweep re-attributes the *final* state; earlier records keep the text
+    they captured at step end, so a ledger that must never hold a secret
+    still needs a scrubbing ``extract`` (scrub at capture).
     """
 
     name = "lineage"
@@ -258,13 +272,22 @@ class LineageMiddleware(Middleware):
         return output
 
     def on_run_end(self, ctx: RunContext, output):
-        # EarlyReturn contract: on_run_end is a finalizer sweep. On a
-        # short-circuited run the final output never went through
-        # on_step_end, so blame would describe a state the caller never saw
-        # — attribute the substituted output to "early_return".
+        # Finalizer sweep: the ledger must end on the state the caller
+        # actually saw. Two ways the final output can differ from the last
+        # on_step_end snapshot: EarlyReturn substituted it (attribute to
+        # "early_return"), or an inner middleware transformed it during the
+        # run-end unwind — policy egress redaction is the canonical case
+        # (attribute to "egress").
         ledger = ctx.artifacts.get("lineage")  # may be absent: see Middleware docs
-        if ledger is None or not ctx.short_circuited:
+        if ledger is None:
             return output
-        stats = ledger.evolve("early_return", self._artifact(output))
-        ctx.emit("lineage_evolved", step="early_return", **stats)
+        artifact = self._artifact(output)
+        if ctx.short_circuited:
+            step = "early_return"
+        elif lines_of(artifact) != ledger.current_lines():
+            step = "egress"
+        else:
+            return output
+        stats = ledger.evolve(step, artifact)
+        ctx.emit("lineage_evolved", step=step, **stats)
         return output

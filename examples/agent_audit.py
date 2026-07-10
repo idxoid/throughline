@@ -47,9 +47,10 @@ same flow at exported Claude Code / Cursor / Codex transcripts. Secrets
 never belong in a manifest (env vars are name -> value-hash), and policy
 egress recursively redacts anything an agent leaks — in the report string
 and in every structured field of the public output alike. The lineage
-blame trail applies the same scrub at capture time: the ledger snapshots
-step outputs before egress runs, so an audit trail that records raw text
-would re-leak what the output just redacted.
+blame trail applies the same scrub at capture time: lineage's run-end
+sweep re-attributes the egress redaction in the final blame, but earlier
+ledger records keep whatever text they captured, so the example scrubs
+before recording anything at all.
 """
 
 from __future__ import annotations
