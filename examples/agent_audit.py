@@ -18,12 +18,18 @@ Three layers, deliberately separate:
   **cause** side.
 - **trace** ("flight recorder" of a run): the normalized tool-call sequence,
   one entry per call — tool, arguments hash, status (ok / error / denied /
-  no result), result hash, duration. Two runs can share a manifest and both
-  end green yet get there along different paths; the trace diff aligns both
-  sequences on (tool, arguments), names the **first behavioral divergence**,
-  then classifies the rest of the gap: changed arguments, changed result,
-  permission denials, missing / added / reordered calls. An empty trace diff
-  is itself a finding: identical behavior clears the run even when the
+  no result), result hash, duration. Results join their calls by
+  ``call_id`` (the tool-use id real harnesses record); a transcript without
+  ids falls back to tool-name inference and the whole trace is marked
+  ``trace_quality="inferred"`` — with parallel same-tool calls in flight
+  (the manifests literally declare ``parallel-tools``), name inference can
+  attach both results to the wrong calls, so only an id join earns
+  ``"exact"``. Two runs can share a manifest and both end green yet get
+  there along different paths; the trace diff aligns both sequences on
+  (tool, arguments), names the **first behavioral divergence**, then
+  classifies the rest of the gap: changed arguments, changed result,
+  permission denials, missing / added / reordered calls. An empty trace
+  diff is itself a finding: identical behavior clears the run even when the
   manifests drifted. The **path** side.
 - **outcome fingerprint**: what the run actually *did*, across dimensions —
   status is only one. Also: which files it touched (and whether any were
@@ -235,37 +241,61 @@ def assess_outcomes(payload, ctx: RunContext) -> dict:
 
 def extract_traces(payload, ctx: RunContext) -> dict:
     """Normalize tool activity into one comparable trace entry per call."""
-    traces = {}
+    traces, quality = {}, {}
     for label, events in payload["sessions"].items():
-        trace: list[dict[str, Any]] = []
-        for line_no, event in enumerate(events, start=1):
-            if event["type"] == "tool_call":
-                args = event.get("args", {})
-                trace.append({
-                    "event": len(trace) + 1,
-                    "line": line_no,
-                    "tool": event["name"],
-                    "args": args,
-                    "args_hash": _hash(args),
-                    "status": "no_result",
-                    "result_hash": None,
-                    "result_head": "",
-                    "duration_ms": None,
-                })
-            elif event["type"] == "tool_result":
-                # a result belongs to the latest same-tool call still waiting
-                call = next((t for t in reversed(trace)
+        traces[label], quality[label] = _build_trace(events)
+        ctx.metric("audit.tool_calls", len(traces[label]))
+        if quality[label] != "exact":
+            ctx.metric("audit.trace_inferred", 1)
+    return {**payload, "traces": traces, "trace_quality": quality}
+
+
+def _build_trace(events: list[dict]) -> tuple[list[dict[str, Any]], str]:
+    """Pair each tool_result with its call. The join key is ``call_id``;
+    tool-name inference (first same-tool call still waiting — batched
+    parallel calls conventionally stream results in call order) is only a
+    fallback, and one inferred attachment downgrades the whole trace to
+    trace_quality="inferred": with parallel same-tool calls in flight,
+    name inference can attach both results to the wrong calls and nothing
+    in the transcript would show it. A call accepts at most one result;
+    a result whose call_id matches nothing is dropped, not guessed."""
+    trace: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    inferred = False
+    for line_no, event in enumerate(events, start=1):
+        if event["type"] == "tool_call":
+            args = event.get("args", {})
+            entry = {
+                "event": len(trace) + 1,
+                "line": line_no,
+                "call_id": event.get("call_id"),
+                "tool": event["name"],
+                "args": args,
+                "args_hash": _hash(args),
+                "status": "no_result",
+                "result_hash": None,
+                "result_head": "",
+                "duration_ms": None,
+            }
+            trace.append(entry)
+            if entry["call_id"] is not None:
+                by_id[entry["call_id"]] = entry
+        elif event["type"] == "tool_result":
+            call_id = event.get("call_id")
+            if call_id is not None:
+                call = by_id.get(call_id)
+            else:
+                call = next((t for t in trace
                              if t["tool"] == event.get("name")
                              and t["status"] == "no_result"), None)
-                if call:
-                    call["status"] = event.get("status", "ok")
-                    call["result_hash"] = _hash(event.get("text", ""))
-                    # longer than any render width, so truncation shows "…"
-                    call["result_head"] = event.get("text", "")[:80]
-                    call["duration_ms"] = event.get("duration_ms")
-        traces[label] = trace
-        ctx.metric("audit.tool_calls", len(trace))
-    return {**payload, "traces": traces}
+                inferred = inferred or call is not None
+            if call is not None and call["status"] == "no_result":
+                call["status"] = event.get("status", "ok")
+                call["result_hash"] = _hash(event.get("text", ""))
+                # longer than any render width, so truncation shows "…"
+                call["result_head"] = event.get("text", "")[:80]
+                call["duration_ms"] = event.get("duration_ms")
+    return trace, ("inferred" if inferred else "exact")
 
 
 def extract_decisions(semantic=None):
@@ -590,6 +620,12 @@ def render_report(payload, ctx: RunContext) -> dict:
         lines.append("- none")
 
     lines.extend(["", "## Trace divergence (behavior)"])
+    quality = payload["trace_quality"]
+    caveat = ("" if all(q == "exact" for q in quality.values())
+              else " — inferred pairing is best-effort; parallel same-tool"
+                   " calls can mis-pair results")
+    lines.append(f"Trace quality: baseline={quality['baseline']},"
+                 f" candidate={quality['candidate']}{caveat}")
     for item in payload["trace_divergence"] or []:
         lines.extend(_render_trace_item(item))
     if not payload["trace_divergence"]:
@@ -621,6 +657,7 @@ def render_report(payload, ctx: RunContext) -> dict:
     return {
         "verdict": payload["verdict"],
         "drift": payload["drift"],
+        "trace_quality": payload["trace_quality"],
         "trace_divergence": payload["trace_divergence"],
         "divergence": payload["divergence"],
         "outcomes": outcomes,

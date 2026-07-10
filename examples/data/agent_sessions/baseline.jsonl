@@ -1,8 +1,8 @@
 {"type": "session_start", "session_id": "s-0709", "ts": "2026-07-09T10:02:00Z", "config": {"model": {"id": "claude-opus-4-8", "release": "20260601", "temperature": 0.0, "top_p": 1.0, "reasoning_effort": "medium", "max_tokens": 8192}, "harness": {"name": "claude-code", "version": "3.7.2", "build": "9f31c", "feature_flags": ["parallel-tools"]}, "runtime": {"os": "linux", "arch": "x86_64", "python": "3.12.4"}, "repository": {"commit": "d4c3b2a1", "branch": "main", "dirty": false}, "dependencies": {"lock_sha256": "5566aabb", "image_digest": "sha256:20f1"}, "environment": {"API_BASE_URL": "e1f2a3b4", "DATABASE_URL": "c0ffee11"}, "prompt": {"system_sha256": "beefcafe", "template": "default-v2", "instructions": {"CLAUDE.md": "ab12cd34", ".claude/settings.json": "77aa88bb"}}, "skills": {"code-review": {"version": "1.4.0", "sha256": "aa11bb22"}}, "mcp": {"git": {"version": "2.1.0", "command": "mcp-git", "args_sha256": "01020304", "capabilities": ["tools"]}}, "tools": {"Read": {"schema_sha256": "r1a2b3c4"}, "Edit": {"schema_sha256": "e5d6f7a8"}, "Bash": {"schema_sha256": "b9c0d1e2", "permissions": "sandboxed"}}, "network": {"mode": "restricted", "allowlist": ["github.com"]}, "workspace": {"merkle_root": "m-aaaa1111"}, "execution": {"seed": 42, "locale": "en_US.UTF-8", "timezone": "UTC"}}}
 {"type": "user", "text": "add retry with backoff to fetch_users() in api/client.py"}
 {"type": "assistant", "text": "I'll add a retry with exponential backoff to fetch_users(), keeping the sync interface unchanged."}
-{"type": "tool_call", "name": "Edit", "args": {"file_path": "api/client.py"}}
-{"type": "tool_call", "name": "Bash", "args": {"command": "pytest tests/test_client.py -q"}}
-{"type": "tool_result", "name": "Bash", "status": "ok", "duration_ms": 1320, "text": "4 passed in 1.32s"}
+{"type": "tool_call", "call_id": "call-b1", "name": "Edit", "args": {"file_path": "api/client.py"}}
+{"type": "tool_call", "call_id": "call-b2", "name": "Bash", "args": {"command": "pytest tests/test_client.py -q"}}
+{"type": "tool_result", "call_id": "call-b2", "name": "Bash", "status": "ok", "duration_ms": 1320, "text": "4 passed in 1.32s"}
 {"type": "assistant", "text": "Done: fetch_users() retries up to 3 times with exponential backoff; all 4 tests pass."}
 {"type": "session_end", "status": "ok", "usage": {"input_tokens": 1400, "output_tokens": 310}}

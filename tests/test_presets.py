@@ -262,6 +262,12 @@ class PresetTests(unittest.TestCase):
         # trace divergence (behavior): both runs open identically (edit, then
         # pytest with the same args) — the paths split at the first pytest
         # *result*, and that event is the headline
+        # both fixtures carry call_id on every tool event -> exact pairing
+        self.assertEqual(result.output["trace_quality"],
+                         {"baseline": "exact", "candidate": "exact"})
+        self.assertIn("Trace quality: baseline=exact, candidate=exact",
+                      result.output["report"])
+        self.assertNotIn("audit.trace_inferred", result.metrics["counters"])
         trace = result.output["trace_divergence"]
         self.assertEqual([item["kind"] for item in trace],
                          ["first_divergence", "result_changed",
@@ -366,6 +372,56 @@ class PresetTests(unittest.TestCase):
 
         # identical traces: the empty diff is the signal
         self.assertEqual(_compare_traces([read(1)], [read(1)]), [])
+
+    def test_example_agent_audit_trace_pairing(self):
+        """call_id joins beat arrival order; name inference is only a
+        fallback and downgrades the whole trace to "inferred"."""
+        from examples.agent_audit import _build_trace
+
+        def call(cid, path):
+            return {"type": "tool_call", "call_id": cid, "name": "Read",
+                    "args": {"file_path": path}}
+
+        # parallel same-tool batch, results arriving OUT of call order:
+        # the id join pairs each result with its own call
+        events = [call("call-1", "a.py"), call("call-2", "b.py"),
+                  {"type": "tool_result", "call_id": "call-2", "text": "content b"},
+                  {"type": "tool_result", "call_id": "call-1", "text": "content a"}]
+        trace, quality = _build_trace(events)
+        self.assertEqual(quality, "exact")
+        self.assertEqual([t["result_head"] for t in trace],
+                         ["content a", "content b"])
+
+        # same batch without ids: name inference mis-pairs both results —
+        # exactly why an inferred trace must never claim to be exact
+        events = [
+            {"type": "tool_call", "name": "Read", "args": {"file_path": "a.py"}},
+            {"type": "tool_call", "name": "Read", "args": {"file_path": "b.py"}},
+            {"type": "tool_result", "name": "Read", "text": "content b"},
+            {"type": "tool_result", "name": "Read", "text": "content a"},
+        ]
+        trace, quality = _build_trace(events)
+        self.assertEqual(quality, "inferred")
+        self.assertEqual([t["result_head"] for t in trace],
+                         ["content b", "content a"])  # documented mis-pair
+
+        # mixed transcript: one id join + one name fallback is still inferred
+        events = [call("call-1", "a.py"),
+                  {"type": "tool_call", "name": "Grep", "args": {"pattern": "x"}},
+                  {"type": "tool_result", "call_id": "call-1", "text": "content a"},
+                  {"type": "tool_result", "name": "Grep", "text": "2 hits"}]
+        trace, quality = _build_trace(events)
+        self.assertEqual(quality, "inferred")
+        self.assertEqual([t["result_head"] for t in trace],
+                         ["content a", "2 hits"])
+
+        # an id that matches no call is dropped, never guessed by name
+        events = [call("call-1", "a.py"),
+                  {"type": "tool_result", "call_id": "call-9", "name": "Read",
+                   "text": "stray"}]
+        trace, quality = _build_trace(events)
+        self.assertEqual(quality, "exact")
+        self.assertEqual(trace[0]["status"], "no_result")
 
     def test_example_agent_audit_decision_classes(self):
         """Two-stage extraction semantics the fixtures can't isolate."""

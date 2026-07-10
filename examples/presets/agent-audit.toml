@@ -1,8 +1,8 @@
 # Example agent-audit preset: reproducibility audit of two recorded agent
 # sessions — run manifests ("lockfile"), config drift diff, tool-call trace
-# alignment (first behavioral divergence), multidimensional outcome
-# fingerprint, two-stage classed decision extraction with evidence, secret
-# redaction.
+# alignment (call_id-paired with exact/inferred quality, first behavioral
+# divergence), multidimensional outcome fingerprint, two-stage classed
+# decision extraction with evidence, secret redaction.
 # Payload: {"baseline": path, "candidate": path}; empty input uses the
 # bundled fixtures. Run from the repository root:
 #   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run agent-audit -i "audit" --json --blame
@@ -73,7 +73,7 @@ scope = "final"
 on_fail = "raise"
 [middleware.validate.schema]
 type = "object"
-required = ["verdict", "drift", "trace_divergence", "divergence", "outcomes", "decisions", "report"]
+required = ["verdict", "drift", "trace_quality", "trace_divergence", "divergence", "outcomes", "decisions", "report"]
 [middleware.validate.schema.properties.verdict]
 type = "string"
 enum = ["clean", "config_drift", "execution_divergence", "drift_and_divergence"]
