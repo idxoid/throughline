@@ -221,6 +221,24 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(budget.output["action"], "escalate")
         self.assertEqual(budget.metrics["counters"]["quota.exceeded"], 1)
 
+    def test_example_agent_audit_preset_end_to_end(self):
+        flow = load_preset("examples/presets/agent-audit.toml")
+        result = flow.run({})
+        self.assertEqual(result.output["verdict"], "drift_with_outcome_change")
+        fields = {item["field"] for item in result.output["drift"]}
+        self.assertIn("instructions:CLAUDE.md", fields)
+        self.assertIn("mcp_servers", fields)
+        self.assertIn("model_release", fields)
+        self.assertEqual(len(result.output["decisions"]["baseline"]), 1)
+        self.assertEqual(result.output["decisions"]["candidate"][0]["line"], 3)
+        self.assertIn("[secret redacted]", result.output["report"])
+        self.assertNotIn("sk-live", result.output["report"])
+        self.assertEqual(result.metrics["counters"]["policy.redacted"], 1)
+        self.assertGreater(result.metrics["counters"]["audit.drift"], 2)
+        self.assertEqual(result.violations, [])
+        blame_steps = {entry["step"] for entry in result.lineage.blame()}
+        self.assertIn("report", blame_steps)
+
 
 class BuildFlowUnit(unittest.TestCase):
     def test_build_flow_minimal_dict(self):

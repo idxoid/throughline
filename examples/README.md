@@ -180,6 +180,7 @@ The rest of `examples/` shows the control plane from other angles — run
 | [`data-qa`](presets/data-qa.toml) | Data quality assistant | deterministic checks, step validation, strict report schema |
 | [`doc-extract`](presets/doc-extract.toml) | Document extraction pipeline | parser slot, page map, retryable structured extraction |
 | [`support-agent`](presets/support-agent.toml) | Guarded support bot | intent routing, policy screening/redaction, quota fallback, audit |
+| [`agent-audit`](presets/agent-audit.toml) | AI-agent workflow reproducibility | run manifests ("lockfile"), config drift diff, decision provenance, secret redaction |
 | [`surgical_context/`](surgical_context/) | Code intelligence / change impact | file:line citations, code QA, real integration |
 
 ```console

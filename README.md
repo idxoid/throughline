@@ -115,6 +115,7 @@ These examples are the fastest way to see what the control plane is for:
 | `data-qa` | Data quality assistant | deterministic checks, step validation, strict report schema |
 | `doc-extract` | Document extraction pipeline | parser slot, page map, retryable structured extraction |
 | `support-agent` | Guarded support bot | intent routing, policy screening/redaction, quota fallback, audit |
+| `agent-audit` | AI-agent workflow reproducibility | run manifests ("lockfile"), config drift diff, decision provenance, secret redaction |
 | `surgical_context` | Code intelligence / change impact | file:line citations, code QA, real integration |
 
 ```bash

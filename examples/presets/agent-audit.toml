@@ -1,0 +1,57 @@
+# Example agent-audit preset: reproducibility audit of two recorded agent
+# sessions — run manifests ("lockfile"), config drift diff, decision
+# provenance, secret redaction.
+# Payload: {"baseline": path, "candidate": path}; empty input uses the
+# bundled fixtures. Run from the repository root:
+#   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run agent-audit -i "audit" --json --blame
+name = "agent-audit"
+description = "Agent workflow audit: manifests -> decision extraction -> drift diff -> report, with secret redaction."
+
+[[steps]]
+uses = "examples.agent_audit:normalize"
+name = "normalize"
+
+[[steps]]
+uses = "examples.agent_audit:load_sessions"
+name = "load"
+
+[[steps]]
+uses = "examples.agent_audit:build_manifests"
+name = "manifests"
+
+[[steps]]
+uses = "examples.agent_audit:extract_decisions"
+name = "decisions"
+
+[[steps]]
+uses = "examples.agent_audit:diff_runs"
+name = "diff"
+
+[[steps]]
+uses = "examples.agent_audit:render_report"
+name = "report"
+
+# Table order is the middleware order: observers outside Policy (a redaction
+# must be visible in metrics and events). Validate is outside Policy so final
+# schema validation sees the redacted report.
+[middleware.observe]
+
+[middleware.metrics]
+
+[middleware.validate]
+scope = "final"
+on_fail = "raise"
+[middleware.validate.schema]
+type = "object"
+required = ["verdict", "drift", "decisions", "outcome", "report"]
+[middleware.validate.schema.properties.verdict]
+type = "string"
+enum = ["clean", "drift_only", "outcome_change_no_drift", "drift_with_outcome_change"]
+[middleware.validate.schema.properties.report]
+type = "string"
+
+[middleware.policy]
+egress = ["examples.agent_audit:redact_secrets"]
+
+[middleware.lineage]
+extract = "report"

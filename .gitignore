@@ -17,3 +17,5 @@ venv/
 # runtime debris (event logs, lineage exports)
 /memory
 *.jsonl
+# ...but bundled example fixtures are source, not debris
+!examples/data/agent_sessions/*.jsonl
