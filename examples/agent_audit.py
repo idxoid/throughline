@@ -31,6 +31,15 @@ Three layers, deliberately separate:
   results, and token spend. A run can be ``status=ok`` and still diverge on
   every other dimension. The **effect** side.
 
+Decisions ride along as a fourth, softer channel: assistant sentences
+classed as **plan / decision / assumption / action**. Stage 1 is a
+deterministic marker table (auditable, replayable); stage 2 is the optional
+``@semantic`` preset slot — filled here with a cheap cue heuristic so the
+example runs offline, pointed at an LLM extractor in a real deployment —
+which may only add what the markers missed, never override them. Every item
+keeps its evidence: the cue that fired, the sentence quote, and the quote's
+char span at its transcript line.
+
 `diff_runs` compares all three and renders a verdict over the pair. The session
 fixtures are a neutral JSONL shape (one event per line) modeled on what
 coding-agent harnesses record on disk; a real deployment would point the
@@ -53,8 +62,37 @@ from throughline.modules.policy import Transform
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "agent_sessions"
 
-DECISION_RE = re.compile(
-    r"^(?:I'll|I will|Plan:|Decision:|Decided|Switching)", re.IGNORECASE
+# Stage-1 decision markers, applied per sentence (anywhere in it, not only
+# at line starts). Tuple order is class precedence — a sentence gets the
+# first class whose pattern hits: plan outranks decision outranks assumption
+# outranks action, because the generic cues ("I'll") appear inside nearly
+# every planning or deciding sentence too.
+MARKER_RULES = (
+    ("plan", re.compile(
+        r"^plan\b|\bplan:|\bmy plan\b|\bfirst\b.*\bthen\b", re.IGNORECASE)),
+    ("decision", re.compile(
+        r"\bdecided\b|\bdecision:|\bswitching to\b|\binstead of\b"
+        r"|\bgoing with\b|\bopting for\b|\brather than\b", re.IGNORECASE)),
+    ("assumption", re.compile(
+        r"\bassum\w+\b|\bpresumably\b|\blikely\b|\bprobably\b"
+        r"|\bshould (?:still |already )?(?:be|work|pass)\b"
+        r"|\bexpect(?:s|ing)? that\b", re.IGNORECASE)),
+    ("action", re.compile(
+        r"\bi(?:'|’)ll\b|\bi will\b|\blet me\b|\bgoing to\b|\brunning\b",
+        re.IGNORECASE)),
+)
+
+# Cheap offline stand-in for the @semantic slot: commitment phrasings that
+# carry no stage-1 marker. A real deployment fills the slot with an
+# LLM-backed classifier honoring the same contract.
+SEMANTIC_CUES = (
+    ("decision", re.compile(
+        r"\bthe (?:right|simplest|safest|correct) (?:fix|approach|way|call)\b"
+        r"|\bthe fix is\b", re.IGNORECASE)),
+    ("assumption", re.compile(
+        r"\bshould (?:be enough|suffice)\b|\bin theory\b", re.IGNORECASE)),
+    ("action", re.compile(
+        r"\bnext step is\b|\btime to\b", re.IGNORECASE)),
 )
 SECRET_RE = re.compile(r"\b(?:sk|key|token)-[A-Za-z0-9-]{8,}\b")
 TEST_PATH_RE = re.compile(r"(^|/)tests?/|(^|/)test_|_test\.")
@@ -225,24 +263,77 @@ def extract_traces(payload, ctx: RunContext) -> dict:
     return {**payload, "traces": traces}
 
 
-def extract_decisions(payload, ctx: RunContext) -> dict:
-    """Commitment-like assistant lines, each with transcript-line provenance."""
-    decisions = {}
-    for label, events in payload["sessions"].items():
-        found = []
-        for line_no, event in enumerate(events, start=1):
-            if event["type"] != "assistant":
-                continue
-            match = DECISION_RE.match(event["text"])
+def extract_decisions(semantic=None):
+    """Factory for the decisions step (the ``@semantic`` slot arrives here).
+
+    Stage 1 tags sentences with deterministic markers; stage 2 hands only
+    the sentences stage 1 left untagged to the optional ``semantic``
+    extractor — it can add, never override, so the auditable core stays
+    replayable. Every item keeps its evidence: the cue that fired, the
+    sentence quote, and the quote's char span at its transcript line.
+    """
+    def step(payload, ctx: RunContext) -> dict:
+        decisions = {}
+        for label, events in payload["sessions"].items():
+            found = []
+            for line_no, event in enumerate(events, start=1):
+                if event["type"] == "assistant":
+                    found.extend(
+                        _classify_message(event["text"], line_no, semantic))
+            decisions[label] = found
+            ctx.metric("audit.decisions", len(found))
+            ctx.metric("audit.decisions.semantic",
+                       sum(1 for f in found if f["source"] == "semantic"))
+        return {**payload, "decisions": decisions}
+    return step
+
+
+def heuristic_semantics(sentence: str) -> tuple[str, str] | None:
+    """Default fill for ``@semantic``: (class, cue) or None per sentence."""
+    for cls, pattern in SEMANTIC_CUES:
+        match = pattern.search(sentence)
+        if match:
+            return cls, match.group(0)
+    return None
+
+
+def _classify_message(text: str, line_no: int, semantic) -> list[dict[str, Any]]:
+    found = []
+    for start, end, sentence in _sentences(text):
+        item = None
+        for cls, pattern in MARKER_RULES:
+            match = pattern.search(sentence)
             if match:
-                found.append({
-                    "line": line_no,
-                    "marker": match.group(0),
-                    "quote": event["text"],
-                })
-        decisions[label] = found
-        ctx.metric("audit.decisions", len(found))
-    return {**payload, "decisions": decisions}
+                item = _item(line_no, cls, "marker", "high",
+                             match.group(0), (start, end), sentence)
+                break
+        if item is None and semantic is not None:
+            verdict = semantic(sentence)
+            if verdict:
+                cls, cue = verdict
+                item = _item(line_no, cls, "semantic", "medium",
+                             cue, (start, end), sentence)
+        if item:
+            found.append(item)
+    return found
+
+
+def _sentences(text: str):
+    """Yield (start, end, stripped sentence); example-grade splitter — no
+    abbreviation or inline-path handling."""
+    for match in re.finditer(r"[^.!?]+[.!?]*", text):
+        raw = match.group(0)
+        head = len(raw) - len(raw.lstrip())
+        tail = len(raw) - len(raw.rstrip())
+        if raw.strip():
+            yield match.start() + head, match.end() - tail, raw.strip()
+
+
+def _item(line: int, cls: str, source: str, confidence: str,
+          cue: str, span: tuple[int, int], quote: str) -> dict[str, Any]:
+    return {"line": line, "class": cls, "source": source,
+            "confidence": confidence,
+            "evidence": {"cue": cue, "span": list(span), "quote": quote}}
 
 
 def diff_runs(payload, ctx: RunContext) -> dict:
@@ -509,7 +600,11 @@ def render_report(payload, ctx: RunContext) -> dict:
     lines.extend(["", "## Decisions"])
     for label in ("baseline", "candidate"):
         for decision in payload["decisions"][label]:
-            lines.append(f"- {label} L{decision['line']}: \"{decision['quote']}\"")
+            lines.append(
+                f"- {label} L{decision['line']}"
+                f" [{decision['class']}/{decision['source']}"
+                f" {decision['confidence']}]:"
+                f" \"{decision['evidence']['quote']}\"")
 
     lines.extend(["", "## Outcome summary"])
     for label in ("baseline", "candidate"):

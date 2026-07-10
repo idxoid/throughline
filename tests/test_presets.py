@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -283,9 +284,29 @@ class PresetTests(unittest.TestCase):
                       result.output["report"])
         self.assertEqual(result.metrics["counters"]["audit.tool_calls"], 8)
 
-        # decisions with transcript-line provenance
-        self.assertEqual(len(result.output["decisions"]["baseline"]), 1)
-        self.assertEqual(result.output["decisions"]["candidate"][0]["line"], 3)
+        # decisions: classed sentences with evidence; deterministic markers
+        # first, the @semantic stage only adds what the markers missed
+        base_d = result.output["decisions"]["baseline"]
+        self.assertEqual([d["class"] for d in base_d], ["action"])
+        cand_d = result.output["decisions"]["candidate"]
+        self.assertEqual([d["class"] for d in cand_d],
+                         ["plan", "action", "assumption", "decision", "decision"])
+        self.assertEqual([d["line"] for d in cand_d], [3, 7, 10, 10, 13])
+        self.assertEqual({d["source"] for d in cand_d[:4]}, {"marker"})
+        semantic = cand_d[-1]
+        self.assertEqual((semantic["source"], semantic["confidence"]),
+                         ("semantic", "medium"))
+        self.assertEqual(semantic["evidence"]["cue"], "the right fix")
+        # evidence replays: each quote is exactly text[span] at its line
+        events = [json.loads(line) for line in
+                  Path("examples/data/agent_sessions/candidate.jsonl")
+                  .read_text(encoding="utf-8").splitlines() if line.strip()]
+        for d in cand_d:
+            start, end = d["evidence"]["span"]
+            self.assertEqual(events[d["line"] - 1]["text"][start:end],
+                             d["evidence"]["quote"])
+        self.assertEqual(result.metrics["counters"]["audit.decisions"], 6)
+        self.assertEqual(result.metrics["counters"]["audit.decisions.semantic"], 1)
 
         # a secret leaked into a risky command is redacted from the report
         self.assertIn("[secret redacted]", result.output["report"])
@@ -336,6 +357,40 @@ class PresetTests(unittest.TestCase):
 
         # identical traces: the empty diff is the signal
         self.assertEqual(_compare_traces([read(1)], [read(1)]), [])
+
+    def test_example_agent_audit_decision_classes(self):
+        """Two-stage extraction semantics the fixtures can't isolate."""
+        from examples.agent_audit import _classify_message, heuristic_semantics
+
+        # precedence: plan + action markers in one sentence -> plan
+        items = _classify_message(
+            "Plan: refactor first, then I'll run the tests.", 1, None)
+        self.assertEqual([i["class"] for i in items], ["plan"])
+
+        # a marker-tagged sentence never reaches the semantic stage
+        items = _classify_message(
+            "The right fix is to retry, so I'll patch the client.", 1,
+            heuristic_semantics)
+        self.assertEqual([(i["class"], i["source"]) for i in items],
+                         [("action", "marker")])
+
+        # markers-only mode: the unmarked commitment goes unclassified...
+        text = "The right fix is to update the tests."
+        self.assertEqual(_classify_message(text, 1, None), [])
+        # ...and the semantic stage catches it at lower confidence
+        items = _classify_message(text, 1, heuristic_semantics)
+        self.assertEqual(
+            [(i["class"], i["source"], i["confidence"]) for i in items],
+            [("decision", "semantic", "medium")])
+
+        # one item per classed sentence, spans replay against the message
+        text = "The sandbox likely blocks pip. Switching to the vendor script."
+        items = _classify_message(text, 7, None)
+        self.assertEqual([i["class"] for i in items],
+                         ["assumption", "decision"])
+        for i in items:
+            start, end = i["evidence"]["span"]
+            self.assertEqual(text[start:end], i["evidence"]["quote"])
 
 
 class BuildFlowUnit(unittest.TestCase):
