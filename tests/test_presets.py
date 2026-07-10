@@ -225,10 +225,19 @@ class PresetTests(unittest.TestCase):
         flow = load_preset("examples/presets/agent-audit.toml")
         result = flow.run({})
         self.assertEqual(result.output["verdict"], "drift_with_outcome_change")
-        fields = {item["field"] for item in result.output["drift"]}
-        self.assertIn("instructions:CLAUDE.md", fields)
-        self.assertIn("mcp_servers", fields)
-        self.assertIn("model_release", fields)
+        drift = {item["field"]: item for item in result.output["drift"]}
+        self.assertEqual(
+            set(drift),
+            {"model.release", "model.temperature",
+             "prompt.instructions.CLAUDE.md", "mcp.lint",
+             "environment.API_BASE_URL", "repository.dirty",
+             "workspace.merkle_root"})
+        self.assertEqual(drift["model.temperature"]["severity"], "high")
+        self.assertEqual(drift["model.release"]["severity"], "medium")
+        self.assertEqual(drift["workspace.merkle_root"]["severity"], "low")
+        # an added MCP server is one drift entry, not one per attribute
+        self.assertIsNone(drift["mcp.lint"]["baseline"])
+        self.assertEqual(drift["mcp.lint"]["candidate"]["command"], "mcp-lint")
         self.assertEqual(len(result.output["decisions"]["baseline"]), 1)
         self.assertEqual(result.output["decisions"]["candidate"][0]["line"], 3)
         self.assertIn("[secret redacted]", result.output["report"])

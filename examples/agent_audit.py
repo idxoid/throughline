@@ -8,18 +8,24 @@ data instead of vibes:
     normalize -> load sessions -> build manifests -> extract decisions
               -> diff runs -> render report
 
-- **manifest** ("lockfile" of a run): model + release, instruction-file
-  hashes, MCP servers, tools — the effective configuration the harness
-  actually ran with, captured per session;
-- **drift**: the field-by-field diff of the two manifests, severity-ranked;
+- **manifest** ("lockfile" of a run): everything that shaped the agent's
+  behavior, captured per session and grouped by category — model + sampling
+  params, harness build + feature flags, runtime, repository state,
+  dependency locks, whitelisted env value hashes, resolved prompt +
+  instruction hashes, skills, MCP servers, tool schema hashes, network
+  posture, workspace Merkle root, execution seed/locale/timezone;
+- **drift**: a recursive diff of the two manifests as dotted paths
+  (``model.temperature``, ``prompt.instructions.CLAUDE.md``), severity
+  ranked by longest-prefix category match;
 - **decisions**: commitment-like assistant lines ("I'll ...", "Plan: ...")
   with file:line provenance into the session transcript;
 - **outcome**: status and token usage per session, with the failure excerpt.
 
 The session fixtures are a neutral JSONL shape (one event per line) modeled
 on what coding-agent harnesses record on disk; a real deployment would point
-the same flow at exported Claude Code / Cursor / Codex transcripts. Policy
-egress redacts leaked secrets before the report leaves the run.
+the same flow at exported Claude Code / Cursor / Codex transcripts. Secrets
+never belong in a manifest — env vars are captured as whitelisted names with
+value *hashes* — and policy egress redacts anything leaked into the report.
 """
 
 from __future__ import annotations
@@ -39,13 +45,26 @@ DECISION_RE = re.compile(
 )
 SECRET_RE = re.compile(r"\b(?:sk|key|token)-[A-Za-z0-9-]{8,}\b")
 
-_MANIFEST_FIELDS = (
-    ("model", "high"),
-    ("model_release", "medium"),
-    ("mcp_servers", "high"),
-    ("tools", "medium"),
-    ("cwd", "low"),
-)
+# Longest dotted-prefix match wins; anything unlisted defaults to "medium".
+SEVERITY = {
+    "model": "medium",              # release bumps are routine...
+    "model.id": "high",             # ...a different model is not
+    "model.temperature": "high",
+    "model.top_p": "high",
+    "model.reasoning_effort": "high",
+    "prompt": "high",
+    "skills": "high",
+    "mcp": "high",
+    "tools": "high",
+    "dependencies": "high",
+    "network": "high",
+    "environment": "medium",
+    "harness": "medium",
+    "runtime": "medium",
+    "repository": "medium",
+    "execution": "medium",
+    "workspace": "low",             # intended code changes live here
+}
 
 
 def normalize(payload, ctx: RunContext) -> dict:
@@ -75,21 +94,15 @@ def load_sessions(payload, ctx: RunContext) -> dict:
 
 
 def build_manifests(payload, ctx: RunContext) -> dict:
-    """Distill each session into its run manifest — the effective config."""
+    """Distill each session into manifest (effective config) + outcome."""
     manifests = {}
     for label, events in payload["sessions"].items():
         start = next(e for e in events if e["type"] == "session_start")
         end = next((e for e in events if e["type"] == "session_end"), {})
-        config = start["config"]
         usage = end.get("usage", {})
         manifests[label] = {
             "session_id": start["session_id"],
-            "model": config["model"],
-            "model_release": config["model_release"],
-            "instructions": {i["path"]: i["sha256"] for i in config["instructions"]},
-            "mcp_servers": sorted(config["mcp_servers"]),
-            "tools": sorted(config["tools"]),
-            "cwd": config["cwd"],
+            "config": start["config"],
             "status": end.get("status", "unknown"),
             "usage": usage,
         }
@@ -119,20 +132,11 @@ def extract_decisions(payload, ctx: RunContext) -> dict:
 
 
 def diff_runs(payload, ctx: RunContext) -> dict:
-    """Field-by-field manifest diff plus the outcome comparison."""
+    """Recursive manifest diff (dotted paths) plus the outcome comparison."""
     base = payload["manifests"]["baseline"]
     cand = payload["manifests"]["candidate"]
-    drift = []
-    for field, severity in _MANIFEST_FIELDS:
-        if base[field] != cand[field]:
-            drift.append({"field": field, "baseline": base[field],
-                          "candidate": cand[field], "severity": severity})
-    for path in sorted(set(base["instructions"]) | set(cand["instructions"])):
-        before = base["instructions"].get(path)
-        after = cand["instructions"].get(path)
-        if before != after:
-            drift.append({"field": f"instructions:{path}", "baseline": before,
-                          "candidate": after, "severity": "high"})
+    drift: list[dict[str, Any]] = []
+    _diff_tree(base["config"], cand["config"], "", drift)
     outcome_changed = base["status"] != cand["status"]
     if drift and outcome_changed:
         verdict = "drift_with_outcome_change"
@@ -144,6 +148,28 @@ def diff_runs(payload, ctx: RunContext) -> dict:
         verdict = "clean"
     ctx.metric("audit.drift", len(drift))
     return {**payload, "drift": drift, "verdict": verdict}
+
+
+def _diff_tree(base: dict, cand: dict, path: str, out: list) -> None:
+    """Emit one drift entry per changed leaf; a subtree present on only one
+    side (an added MCP server, a removed skill) stays one entry, not four."""
+    for key in sorted(set(base) | set(cand)):
+        sub_path = f"{path}.{key}" if path else str(key)
+        before, after = base.get(key), cand.get(key)
+        if isinstance(before, dict) and isinstance(after, dict):
+            _diff_tree(before, after, sub_path, out)
+        elif before != after:
+            out.append({"field": sub_path, "baseline": before,
+                        "candidate": after, "severity": _severity(sub_path)})
+
+
+def _severity(path: str) -> str:
+    parts = path.split(".")
+    for size in range(len(parts), 0, -1):
+        prefix = ".".join(parts[:size])
+        if prefix in SEVERITY:
+            return SEVERITY[prefix]
+    return "medium"
 
 
 def render_report(payload, ctx: RunContext) -> dict:
@@ -159,7 +185,7 @@ def render_report(payload, ctx: RunContext) -> dict:
     ]
     for item in payload["drift"] or []:
         lines.append(f"- [{item['severity']}] {item['field']}:"
-                     f" {item['baseline']} -> {item['candidate']}")
+                     f" {_compact(item['baseline'])} -> {_compact(item['candidate'])}")
     if not payload["drift"]:
         lines.append("- none")
     lines.extend(["", "## Decisions"])
@@ -185,6 +211,14 @@ def render_report(payload, ctx: RunContext) -> dict:
         "outcome": outcome,
         "report": "\n".join(lines),
     }
+
+
+def _compact(value: Any, limit: int = 48) -> str:
+    if value is None:
+        return "(absent)"
+    text = json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) \
+        else str(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _failure_excerpt(events: list[dict[str, Any]]) -> str:
