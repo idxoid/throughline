@@ -35,7 +35,10 @@ Three layers, deliberately separate:
   status is only one. Also: which files it touched (and whether any were
   test files, i.e. tests bent to pass), risky tool calls, parsed test
   results, and token spend. A run can be ``status=ok`` and still diverge on
-  every other dimension. The **effect** side.
+  every other dimension. The diff over fingerprints is symmetric — a
+  vanished risky call, a shrunken test suite, or a big token drop is still
+  divergence — with a separate ``assessment`` (regression / improvement /
+  neutral) judging direction. The **effect** side.
 
 Decisions ride along as a fourth, softer channel: assistant sentences
 classed as **plan / decision / assumption / action**. Stage 1 is a
@@ -109,7 +112,7 @@ SECRET_RE = re.compile(r"\b(?:sk|key|token)-[A-Za-z0-9-]{8,}\b")
 TEST_PATH_RE = re.compile(r"(^|/)tests?/|(^|/)test_|_test\.")
 TESTS_RE = re.compile(r"(\d+)\s+passed|(\d+)\s+failed")
 EDIT_TOOLS = {"Edit", "Write", "Create"}
-TOKEN_BLOWUP = 1.5  # candidate/baseline total-token ratio that trips a flag
+TOKEN_BLOWUP = 1.5  # token-ratio flag threshold, either direction (x or 1/x)
 
 # Bash substrings that make a tool call risky, with the risk label.
 RISKY_PATTERNS = (
@@ -402,35 +405,86 @@ def diff_runs(payload, ctx: RunContext) -> dict:
 
 
 def _compare_outcomes(base: dict, cand: dict) -> list[dict[str, Any]]:
-    """One entry per outcome axis that moved; each carries its own severity."""
+    """One entry per outcome axis that moved — in EITHER direction. The fact
+    of the change is recorded symmetrically; ``assessment`` judges direction
+    separately (regression / improvement / neutral). A diff that fires only
+    on candidate degradations is a regression detector, not a divergence
+    detector: a vanished risky call or a shrunken test suite is still a
+    behavior change the audit must surface."""
     out: list[dict[str, Any]] = []
+
+    def entry(dimension: str, assessment: str, severity: str, **extra) -> None:
+        out.append({"dimension": dimension, "assessment": assessment,
+                    "severity": severity, **extra})
+
     if base["status"] != cand["status"]:
-        out.append({"dimension": "status", "baseline": base["status"],
-                    "candidate": cand["status"], "severity": "high"})
+        entry("status",
+              "improvement" if cand["status"] == "ok" else "regression",
+              "high", baseline=base["status"], candidate=cand["status"])
 
-    new_files = sorted(set(cand["files_touched"]) - set(base["files_touched"]))
-    if new_files:
-        out.append({"dimension": "files_touched", "baseline": base["files_touched"],
-                    "candidate": cand["files_touched"], "added": new_files,
-                    "severity": "medium"})
+    base_files, cand_files = set(base["files_touched"]), set(cand["files_touched"])
+    added_files = sorted(cand_files - base_files)
+    removed_files = sorted(base_files - cand_files)
+    if added_files:  # scope moved; which way is not knowable from paths alone
+        entry("files_added", "neutral", "medium", added=added_files,
+              baseline=base["files_touched"], candidate=cand["files_touched"])
+    if removed_files:
+        entry("files_removed", "neutral", "medium", removed=removed_files,
+              baseline=base["files_touched"], candidate=cand["files_touched"])
 
-    # Tests green *and* a test file was edited: the classic pass-by-shortcut.
-    if cand["test_files_touched"] and cand["tests"]["failed"] == 0:
-        out.append({"dimension": "test_integrity", "baseline": base["test_files_touched"],
-                    "candidate": cand["test_files_touched"],
-                    "note": "tests pass after editing test files", "severity": "high"})
+    if base["tests"] != cand["tests"]:
+        entry("tests_changed", _assess_tests(base["tests"], cand["tests"]),
+              "high" if cand["tests"]["failed"] > base["tests"]["failed"]
+              else "medium",
+              baseline=base["tests"], candidate=cand["tests"])
 
-    if cand["risky_calls"]:
-        out.append({"dimension": "risky_calls", "baseline": base["risky_calls"],
-                    "candidate": cand["risky_calls"], "severity": "high"})
+    # Green *and* test files edited is the pass-by-shortcut smell — on either
+    # side: in the candidate it is the suspect, in the baseline it undermines
+    # the reference the candidate is judged against.
+    base_bent = bool(base["test_files_touched"]) and base["tests"]["failed"] == 0
+    cand_bent = bool(cand["test_files_touched"]) and cand["tests"]["failed"] == 0
+    if base_bent != cand_bent:
+        entry("test_integrity",
+              "regression" if cand_bent else "improvement", "high",
+              baseline=base["test_files_touched"],
+              candidate=cand["test_files_touched"],
+              note=("tests pass after editing test files" if cand_bent
+                    else "baseline went green after editing test files;"
+                         " the candidate did not"))
+
+    base_risky = {(c["risk"], c["command"]) for c in base["risky_calls"]}
+    cand_risky = {(c["risk"], c["command"]) for c in cand["risky_calls"]}
+    added_risky = [c for c in cand["risky_calls"]
+                   if (c["risk"], c["command"]) not in base_risky]
+    removed_risky = [c for c in base["risky_calls"]
+                     if (c["risk"], c["command"]) not in cand_risky]
+    if added_risky:
+        entry("risky_calls_added", "regression", "high", added=added_risky,
+              baseline=base["risky_calls"], candidate=cand["risky_calls"])
+    if removed_risky:
+        entry("risky_calls_removed", "improvement", "medium",
+              removed=removed_risky,
+              baseline=base["risky_calls"], candidate=cand["risky_calls"])
 
     base_total = base["usage"]["total_tokens"] or 1
     ratio = round(cand["usage"]["total_tokens"] / base_total, 2)
-    if ratio >= TOKEN_BLOWUP:
-        out.append({"dimension": "tokens", "baseline": base["usage"]["total_tokens"],
-                    "candidate": cand["usage"]["total_tokens"], "ratio": ratio,
-                    "severity": "medium"})
+    if ratio >= TOKEN_BLOWUP or ratio * TOKEN_BLOWUP <= 1:
+        entry("tokens_ratio",
+              "regression" if ratio > 1 else "improvement", "medium",
+              baseline=base["usage"]["total_tokens"],
+              candidate=cand["usage"]["total_tokens"], ratio=ratio)
     return out
+
+
+def _assess_tests(base: dict, cand: dict) -> str:
+    """Direction of a test-count change: more failures or a shrunken suite
+    (tests vanished while the run stayed green) is a regression; fewer
+    failures with the suite intact, or a grown suite, is an improvement."""
+    if cand["failed"] > base["failed"]:
+        return "regression"
+    if cand["passed"] + cand["failed"] < base["passed"] + base["failed"]:
+        return "regression"
+    return "improvement"
 
 
 def _compare_traces(base: list, cand: list) -> list[dict[str, Any]]:
@@ -633,8 +687,8 @@ def render_report(payload, ctx: RunContext) -> dict:
 
     lines.extend(["", "## Outcome divergence (effect)"])
     for item in payload["divergence"] or []:
-        lines.append(f"- [{item['severity']}] {item['dimension']}:"
-                     f" {_render_divergence(item)}")
+        lines.append(f"- [{item['severity']}] {item['dimension']}"
+                     f" ({item['assessment']}): {_render_divergence(item)}")
     if not payload["divergence"]:
         lines.append("- none")
 
@@ -714,13 +768,21 @@ def _render_divergence(item: dict[str, Any]) -> str:
     dim = item["dimension"]
     if dim == "status":
         return f"{item['baseline']} -> {item['candidate']}"
-    if dim == "files_touched":
-        return f"added {item['added']}"
+    if dim == "files_added":
+        return f"candidate also touched {item['added']}"
+    if dim == "files_removed":
+        return f"candidate never touched {item['removed']}"
+    if dim == "tests_changed":
+        base, cand = item["baseline"], item["candidate"]
+        return (f"{base['passed']}p/{base['failed']}f ->"
+                f" {cand['passed']}p/{cand['failed']}f")
     if dim == "test_integrity":
-        return f"{item['note']}: {item['candidate']}"
-    if dim == "risky_calls":
-        return "; ".join(f"{c['risk']}: {c['command']}" for c in item["candidate"])
-    if dim == "tokens":
+        return f"{item['note']}: {item['candidate'] or item['baseline']}"
+    if dim == "risky_calls_added":
+        return "; ".join(f"{c['risk']}: {c['command']}" for c in item["added"])
+    if dim == "risky_calls_removed":
+        return "; ".join(f"{c['risk']}: {c['command']}" for c in item["removed"])
+    if dim == "tokens_ratio":
         return f"{item['baseline']} -> {item['candidate']} ({item['ratio']}x)"
     return _compact(item.get("candidate"))
 

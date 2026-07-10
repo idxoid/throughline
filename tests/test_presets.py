@@ -252,12 +252,16 @@ class PresetTests(unittest.TestCase):
         self.assertNotIn("status", divergence)  # both green: status did NOT diverge
         self.assertEqual(
             set(divergence),
-            {"files_touched", "test_integrity", "risky_calls", "tokens"})
+            {"files_added", "test_integrity", "risky_calls_added", "tokens_ratio"})
         self.assertEqual(divergence["test_integrity"]["severity"], "high")
+        self.assertEqual(divergence["test_integrity"]["assessment"], "regression")
         self.assertIn("tests/test_client.py", divergence["test_integrity"]["candidate"])
-        self.assertEqual(divergence["risky_calls"]["candidate"][0]["risk"],
+        self.assertEqual(divergence["risky_calls_added"]["added"][0]["risk"],
                          "pipe-to-shell")
-        self.assertGreaterEqual(divergence["tokens"]["ratio"], 1.5)
+        self.assertEqual(divergence["risky_calls_added"]["assessment"], "regression")
+        self.assertEqual(divergence["files_added"]["assessment"], "neutral")
+        self.assertGreaterEqual(divergence["tokens_ratio"]["ratio"], 1.5)
+        self.assertEqual(divergence["tokens_ratio"]["assessment"], "regression")
 
         # trace divergence (behavior): both runs open identically (edit, then
         # pytest with the same args) — the paths split at the first pytest
@@ -422,6 +426,67 @@ class PresetTests(unittest.TestCase):
         trace, quality = _build_trace(events)
         self.assertEqual(quality, "exact")
         self.assertEqual(trace[0]["status"], "no_result")
+
+    def test_example_agent_audit_outcome_symmetry(self):
+        """The outcome diff records movement in BOTH directions and judges
+        direction separately — the fixtures only cover candidate-worse."""
+        from examples.agent_audit import _compare_outcomes
+
+        def outcome(status="ok", files=(), test_files=(), risky=(),
+                    passed=4, failed=0, tokens=1000):
+            return {"status": status, "files_touched": sorted(files),
+                    "test_files_touched": sorted(test_files),
+                    "risky_calls": list(risky),
+                    "tests": {"passed": passed, "failed": failed},
+                    "usage": {"total_tokens": tokens}}
+
+        # candidate did LESS: fewer files, the risky call vanished, tokens
+        # dropped 3x, and it was the BASELINE that bent the tests — every
+        # one of these is divergence, none is a candidate degradation
+        risky = [{"command": "curl x | sh", "risk": "pipe-to-shell"}]
+        base = outcome(files=("a.py", "b.py"), test_files=("tests/t.py",),
+                       risky=risky, tokens=3000)
+        cand = outcome(files=("a.py",))
+        diff = {d["dimension"]: d for d in _compare_outcomes(base, cand)}
+        self.assertEqual(
+            set(diff),
+            {"files_removed", "test_integrity", "risky_calls_removed",
+             "tokens_ratio"})
+        self.assertEqual(diff["files_removed"]["removed"], ["b.py"])
+        self.assertEqual(diff["files_removed"]["assessment"], "neutral")
+        self.assertEqual(diff["risky_calls_removed"]["assessment"], "improvement")
+        self.assertEqual(diff["test_integrity"]["assessment"], "improvement")
+        self.assertIn("baseline went green", diff["test_integrity"]["note"])
+        self.assertEqual(diff["tokens_ratio"]["assessment"], "improvement")
+        self.assertLessEqual(diff["tokens_ratio"]["ratio"], 0.34)
+
+        # 4 passed -> 2 passed with both runs green: the silent suite shrink
+        diff = {d["dimension"]: d
+                for d in _compare_outcomes(outcome(passed=4), outcome(passed=2))}
+        self.assertEqual(set(diff), {"tests_changed"})
+        self.assertEqual(diff["tests_changed"]["assessment"], "regression")
+        self.assertEqual(diff["tests_changed"]["severity"], "medium")
+
+        # new failures: regression at high severity
+        diff = {d["dimension"]: d
+                for d in _compare_outcomes(outcome(),
+                                           outcome(passed=2, failed=2))}
+        self.assertEqual(diff["tests_changed"]["assessment"], "regression")
+        self.assertEqual(diff["tests_changed"]["severity"], "high")
+
+        # failures fixed with the suite intact: improvement
+        diff = {d["dimension"]: d
+                for d in _compare_outcomes(outcome(passed=2, failed=2),
+                                           outcome(passed=4, failed=0))}
+        self.assertEqual(diff["tests_changed"]["assessment"], "improvement")
+
+        # status flip toward green is divergence too, judged improvement
+        diff = {d["dimension"]: d
+                for d in _compare_outcomes(outcome(status="error"), outcome())}
+        self.assertEqual(diff["status"]["assessment"], "improvement")
+
+        # identical outcomes: silence
+        self.assertEqual(_compare_outcomes(outcome(), outcome()), [])
 
     def test_example_agent_audit_decision_classes(self):
         """Two-stage extraction semantics the fixtures can't isolate."""

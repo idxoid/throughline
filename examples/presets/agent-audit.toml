@@ -1,7 +1,8 @@
 # Example agent-audit preset: reproducibility audit of two recorded agent
 # sessions — run manifests ("lockfile"), config drift diff, tool-call trace
 # alignment (call_id-paired with exact/inferred quality, first behavioral
-# divergence), multidimensional outcome fingerprint, two-stage classed
+# divergence), symmetric multidimensional outcome diff (change recorded both
+# directions + regression/improvement assessment), two-stage classed
 # decision extraction with evidence, secret redaction.
 # Payload: {"baseline": path, "candidate": path}; empty input uses the
 # bundled fixtures. Run from the repository root:
