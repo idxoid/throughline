@@ -45,7 +45,11 @@ fixtures are a neutral JSONL shape (one event per line) modeled on what
 coding-agent harnesses record on disk; a real deployment would point the
 same flow at exported Claude Code / Cursor / Codex transcripts. Secrets
 never belong in a manifest (env vars are name -> value-hash), and policy
-egress redacts anything an agent leaks into a command or the report.
+egress recursively redacts anything an agent leaks — in the report string
+and in every structured field of the public output alike. The lineage
+blame trail applies the same scrub at capture time: the ledger snapshots
+step outputs before egress runs, so an audit trail that records raw text
+would re-leak what the output just redacted.
 """
 
 from __future__ import annotations
@@ -692,10 +696,35 @@ def _compact(value: Any, limit: int = 48) -> str:
 
 
 def redact_secrets(checkpoint: str, value: Any, ctx: RunContext):
-    """kind="policy": egress redaction of leaked keys in the public report."""
-    if isinstance(value, dict) and isinstance(value.get("report"), str):
-        report, count = SECRET_RE.subn("[secret redacted]", value["report"])
-        if count:
-            return Transform({**value, "report": report},
-                             f"redacted {count} secret(s)")
+    """kind="policy": recursive egress redaction over the whole public
+    output — a secret rides identically in the report string and in the
+    structured fields (risky commands, trace call views), so scrubbing
+    only the report leaves the JSON output leaking."""
+    redacted, count = _redact_value(value)
+    if count:
+        return Transform(redacted, f"redacted {count} secret(s)")
     return None
+
+
+def lineage_report(payload: Any) -> Any:
+    """Lineage extractor with scrub-at-capture (fills ``@lineage_extract``):
+    the ledger snapshots each step's output at step end — before run-end
+    policy egress can transform anything — so the audit trail must redact
+    what it records; middleware ordering alone cannot keep it clean."""
+    artifact = payload.get("report", payload) if isinstance(payload, dict) \
+        else payload
+    return _redact_value(artifact)[0]
+
+
+def _redact_value(value: Any) -> tuple[Any, int]:
+    """Return (redacted copy, substitution count) over str/dict/list."""
+    if isinstance(value, str):
+        return SECRET_RE.subn("[secret redacted]", value)
+    if isinstance(value, dict):
+        pairs = {key: _redact_value(item) for key, item in value.items()}
+        return ({key: item for key, (item, _) in pairs.items()},
+                sum(count for _, count in pairs.values()))
+    if isinstance(value, list):
+        items = [_redact_value(item) for item in value]
+        return [item for item, _ in items], sum(count for _, count in items)
+    return value, 0

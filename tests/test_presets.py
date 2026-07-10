@@ -308,15 +308,24 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(result.metrics["counters"]["audit.decisions"], 6)
         self.assertEqual(result.metrics["counters"]["audit.decisions.semantic"], 1)
 
-        # a secret leaked into a risky command is redacted from the report
+        # a secret leaked into a risky command is scrubbed from the WHOLE
+        # serialized output — the same token rides in the report string, the
+        # outcome fingerprint, and the trace call views
+        public_json = json.dumps(result.output)
+        self.assertNotIn("sk-live", public_json)
         self.assertIn("[secret redacted]", result.output["report"])
-        self.assertNotIn("sk-live", result.output["report"])
+        self.assertIn(
+            "[secret redacted]",
+            result.output["outcomes"]["candidate"]["risky_calls"][0]["command"])
         self.assertEqual(result.metrics["counters"]["policy.redacted"], 1)
         self.assertGreater(result.metrics["counters"]["audit.drift"], 2)
         self.assertGreater(result.metrics["counters"]["audit.divergence"], 2)
         self.assertEqual(result.violations, [])
-        blame_steps = {entry["step"] for entry in result.lineage.blame()}
-        self.assertIn("report", blame_steps)
+        # lineage sits outside policy, so the blame trail carries the
+        # redacted text — the audit trail must not re-leak the secret
+        blame = result.lineage.blame()
+        self.assertNotIn("sk-live", json.dumps(blame))
+        self.assertIn("report", {entry["step"] for entry in blame})
 
     def test_example_agent_audit_trace_classifier(self):
         """Gap shapes the bundled fixtures don't exercise: reorder,
