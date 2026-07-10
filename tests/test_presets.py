@@ -258,6 +258,31 @@ class PresetTests(unittest.TestCase):
                          "pipe-to-shell")
         self.assertGreaterEqual(divergence["tokens"]["ratio"], 1.5)
 
+        # trace divergence (behavior): both runs open identically (edit, then
+        # pytest with the same args) — the paths split at the first pytest
+        # *result*, and that event is the headline
+        trace = result.output["trace_divergence"]
+        self.assertEqual([item["kind"] for item in trace],
+                         ["first_divergence", "result_changed",
+                          "denied", "calls_added"])
+        first = trace[0]
+        self.assertEqual(first["reason"], "result_changed")
+        self.assertEqual(first["event"], 2)
+        self.assertEqual(first["baseline"]["status"], "ok")
+        self.assertEqual(first["candidate"]["status"], "error")
+        self.assertIn("pytest", first["baseline"]["call"])
+        denied = trace[2]
+        self.assertEqual(denied["side"], "candidate")
+        self.assertIn("pip install aiohttp", denied["call"]["call"])
+        # the workaround chain after the denial, including the pytest re-run
+        added = [v["call"] for v in trace[3]["calls"]]
+        self.assertEqual(len(added), 4)
+        self.assertTrue(added[0].startswith("Bash(pip install"))
+        self.assertTrue(added[-1].startswith("Bash(pytest"))
+        self.assertIn("first behavioral divergence at event 2",
+                      result.output["report"])
+        self.assertEqual(result.metrics["counters"]["audit.tool_calls"], 8)
+
         # decisions with transcript-line provenance
         self.assertEqual(len(result.output["decisions"]["baseline"]), 1)
         self.assertEqual(result.output["decisions"]["candidate"][0]["line"], 3)
@@ -271,6 +296,46 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(result.violations, [])
         blame_steps = {entry["step"] for entry in result.lineage.blame()}
         self.assertIn("report", blame_steps)
+
+    def test_example_agent_audit_trace_classifier(self):
+        """Gap shapes the bundled fixtures don't exercise: reorder,
+        changed arguments, missing call, and the all-clear."""
+        from examples.agent_audit import _compare_traces, _hash
+
+        def call(event, tool, args, status="ok", result=None):
+            return {"event": event, "line": event, "tool": tool, "args": args,
+                    "args_hash": _hash(args), "status": status,
+                    "result_hash": _hash(result) if result is not None else None,
+                    "result_head": (result or "")[:60], "duration_ms": None}
+
+        def read(event):
+            return call(event, "Read", {"file_path": "a.py"}, result="src")
+
+        def grep(event):
+            return call(event, "Grep", {"pattern": "foo"}, result="3 hits")
+
+        # same calls in a different order: reordered, nothing missing/added
+        out = _compare_traces([read(1), grep(2)], [grep(1), read(2)])
+        self.assertEqual([i["kind"] for i in out],
+                         ["first_divergence", "reordered"])
+        self.assertEqual(out[0]["reason"], "reordered")
+
+        # same tool at the same aligned position, different arguments
+        out = _compare_traces([call(1, "Bash", {"command": "pytest -q"})],
+                              [call(1, "Bash", {"command": "pytest -q -x"})])
+        self.assertEqual([i["kind"] for i in out],
+                         ["first_divergence", "args_changed"])
+        self.assertEqual(out[0]["reason"], "args_changed")
+
+        # baseline ran the tests; candidate never did
+        out = _compare_traces([read(1), call(2, "Bash", {"command": "pytest"})],
+                              [read(1)])
+        self.assertEqual([i["kind"] for i in out],
+                         ["first_divergence", "calls_missing"])
+        self.assertIn("pytest", out[1]["calls"][0]["call"])
+
+        # identical traces: the empty diff is the signal
+        self.assertEqual(_compare_traces([read(1)], [read(1)]), [])
 
 
 class BuildFlowUnit(unittest.TestCase):

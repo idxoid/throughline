@@ -1,11 +1,12 @@
 # Example agent-audit preset: reproducibility audit of two recorded agent
-# sessions — run manifests ("lockfile"), config drift diff, multidimensional
-# outcome fingerprint, decision provenance, secret redaction.
+# sessions — run manifests ("lockfile"), config drift diff, tool-call trace
+# alignment (first behavioral divergence), multidimensional outcome
+# fingerprint, decision provenance, secret redaction.
 # Payload: {"baseline": path, "candidate": path}; empty input uses the
 # bundled fixtures. Run from the repository root:
 #   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run agent-audit -i "audit" --json --blame
 name = "agent-audit"
-description = "Agent workflow audit: manifests + outcome fingerprint -> drift/divergence diff -> report, with secret redaction."
+description = "Agent workflow audit: manifest + trace + outcome fingerprint -> drift/divergence diff -> report, with secret redaction."
 
 [[steps]]
 uses = "examples.agent_audit:normalize"
@@ -22,6 +23,10 @@ name = "manifests"
 [[steps]]
 uses = "examples.agent_audit:assess_outcomes"
 name = "outcomes"
+
+[[steps]]
+uses = "examples.agent_audit:extract_traces"
+name = "traces"
 
 [[steps]]
 uses = "examples.agent_audit:extract_decisions"
@@ -47,10 +52,10 @@ scope = "final"
 on_fail = "raise"
 [middleware.validate.schema]
 type = "object"
-required = ["verdict", "drift", "divergence", "outcomes", "decisions", "report"]
+required = ["verdict", "drift", "trace_divergence", "divergence", "outcomes", "decisions", "report"]
 [middleware.validate.schema.properties.verdict]
 type = "string"
-enum = ["clean", "config_drift", "outcome_divergence", "drift_and_divergence"]
+enum = ["clean", "config_drift", "execution_divergence", "drift_and_divergence"]
 [middleware.validate.schema.properties.report]
 type = "string"
 

@@ -6,9 +6,9 @@ reasons. This preset audits two recorded agent sessions and answers with
 data instead of vibes:
 
     normalize -> load sessions -> build manifests -> assess outcomes
-              -> extract decisions -> diff runs -> render report
+              -> extract traces -> extract decisions -> diff runs -> render report
 
-Two halves, deliberately separate:
+Three layers, deliberately separate:
 
 - **manifest** ("lockfile" of a run): everything that shaped the agent's
   behavior — model + sampling params, harness build + feature flags,
@@ -16,13 +16,22 @@ Two halves, deliberately separate:
   resolved prompt + instruction hashes, skills, MCP servers, tool schema
   hashes, network posture, workspace Merkle root, execution seed. The
   **cause** side.
+- **trace** ("flight recorder" of a run): the normalized tool-call sequence,
+  one entry per call — tool, arguments hash, status (ok / error / denied /
+  no result), result hash, duration. Two runs can share a manifest and both
+  end green yet get there along different paths; the trace diff aligns both
+  sequences on (tool, arguments), names the **first behavioral divergence**,
+  then classifies the rest of the gap: changed arguments, changed result,
+  permission denials, missing / added / reordered calls. An empty trace diff
+  is itself a finding: identical behavior clears the run even when the
+  manifests drifted. The **path** side.
 - **outcome fingerprint**: what the run actually *did*, across dimensions —
   status is only one. Also: which files it touched (and whether any were
   test files, i.e. tests bent to pass), risky tool calls, parsed test
   results, and token spend. A run can be ``status=ok`` and still diverge on
   every other dimension. The **effect** side.
 
-`diff_runs` compares both and renders a verdict over the pair. The session
+`diff_runs` compares all three and renders a verdict over the pair. The session
 fixtures are a neutral JSONL shape (one event per line) modeled on what
 coding-agent harnesses record on disk; a real deployment would point the
 same flow at exported Claude Code / Cursor / Codex transcripts. Secrets
@@ -32,8 +41,10 @@ egress redacts anything an agent leaks into a command or the report.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +93,18 @@ SEVERITY = {
     "repository": "medium",
     "execution": "medium",
     "workspace": "low",             # intended code changes live here
+}
+
+# Severity per trace-divergence kind. Reorders rank low: parallel tool
+# batches legitimately land in different orders between runs.
+TRACE_SEVERITY = {
+    "first_divergence": "high",
+    "result_changed": "high",
+    "denied": "high",
+    "args_changed": "medium",
+    "calls_missing": "medium",
+    "calls_added": "medium",
+    "reordered": "low",
 }
 
 
@@ -167,6 +190,41 @@ def assess_outcomes(payload, ctx: RunContext) -> dict:
     return {**payload, "outcomes": outcomes}
 
 
+def extract_traces(payload, ctx: RunContext) -> dict:
+    """Normalize tool activity into one comparable trace entry per call."""
+    traces = {}
+    for label, events in payload["sessions"].items():
+        trace: list[dict[str, Any]] = []
+        for line_no, event in enumerate(events, start=1):
+            if event["type"] == "tool_call":
+                args = event.get("args", {})
+                trace.append({
+                    "event": len(trace) + 1,
+                    "line": line_no,
+                    "tool": event["name"],
+                    "args": args,
+                    "args_hash": _hash(args),
+                    "status": "no_result",
+                    "result_hash": None,
+                    "result_head": "",
+                    "duration_ms": None,
+                })
+            elif event["type"] == "tool_result":
+                # a result belongs to the latest same-tool call still waiting
+                call = next((t for t in reversed(trace)
+                             if t["tool"] == event.get("name")
+                             and t["status"] == "no_result"), None)
+                if call:
+                    call["status"] = event.get("status", "ok")
+                    call["result_hash"] = _hash(event.get("text", ""))
+                    # longer than any render width, so truncation shows "…"
+                    call["result_head"] = event.get("text", "")[:80]
+                    call["duration_ms"] = event.get("duration_ms")
+        traces[label] = trace
+        ctx.metric("audit.tool_calls", len(trace))
+    return {**payload, "traces": traces}
+
+
 def extract_decisions(payload, ctx: RunContext) -> dict:
     """Commitment-like assistant lines, each with transcript-line provenance."""
     decisions = {}
@@ -188,27 +246,33 @@ def extract_decisions(payload, ctx: RunContext) -> dict:
 
 
 def diff_runs(payload, ctx: RunContext) -> dict:
-    """Config drift + multidimensional outcome divergence -> combined verdict."""
+    """Config drift (cause) + trace (path) + outcome (effect) -> verdict."""
     base_m, cand_m = payload["manifests"]["baseline"], payload["manifests"]["candidate"]
     drift: list[dict[str, Any]] = []
     _diff_tree(base_m["config"], cand_m["config"], "", drift)
 
+    trace_div = _compare_traces(payload["traces"]["baseline"],
+                                payload["traces"]["candidate"])
+
     base_o, cand_o = payload["outcomes"]["baseline"], payload["outcomes"]["candidate"]
     divergence = _compare_outcomes(base_o, cand_o)
 
-    has_drift, has_divergence = bool(drift), bool(divergence)
+    has_drift = bool(drift)
+    has_divergence = bool(trace_div) or bool(divergence)
     if has_drift and has_divergence:
         verdict = "drift_and_divergence"
     elif has_drift:
         verdict = "config_drift"
     elif has_divergence:
-        verdict = "outcome_divergence"
+        verdict = "execution_divergence"
     else:
         verdict = "clean"
 
     ctx.metric("audit.drift", len(drift))
+    ctx.metric("audit.trace_divergence", len(trace_div))
     ctx.metric("audit.divergence", len(divergence))
-    return {**payload, "drift": drift, "divergence": divergence, "verdict": verdict}
+    return {**payload, "drift": drift, "trace_divergence": trace_div,
+            "divergence": divergence, "verdict": verdict}
 
 
 def _compare_outcomes(base: dict, cand: dict) -> list[dict[str, Any]]:
@@ -241,6 +305,153 @@ def _compare_outcomes(base: dict, cand: dict) -> list[dict[str, Any]]:
                     "candidate": cand["usage"]["total_tokens"], "ratio": ratio,
                     "severity": "medium"})
     return out
+
+
+def _compare_traces(base: list, cand: list) -> list[dict[str, Any]]:
+    """Diff the tool-call sequences. LCS alignment on (tool, args-hash)
+    splits the pair into matched calls and per-side leftovers; a leftover
+    signature present on *both* sides is a reorder, not an add + remove.
+    The earliest aligned position that is not a clean match becomes the
+    headline ``first_divergence`` entry (it repeats one fact from the
+    inventory below it on purpose — navigation vs. completeness)."""
+    ops = _pair_arg_changes(_align(base, cand))
+    moved = (Counter(_sig(b) for op, b, _ in ops if op == "base_only")
+             & Counter(_sig(c) for op, _, c in ops if op == "cand_only"))
+
+    out: list[dict[str, Any]] = []
+    first: dict[str, Any] | None = None
+    missing, added, reordered = [], [], []
+    budget_b, budget_c = Counter(moved), Counter(moved)
+    for op, b, c in ops:
+        kind = None
+        if op == "match":
+            if b["status"] != c["status"] or b["result_hash"] != c["result_hash"]:
+                kind = "result_changed"
+        elif op == "args_changed":
+            kind = "args_changed"
+        elif op == "base_only":
+            if budget_b[_sig(b)]:
+                budget_b[_sig(b)] -= 1
+                reordered.append(b)
+                kind = "reordered"
+            else:
+                missing.append(b)
+                kind = "calls_missing"
+        else:  # cand_only
+            if budget_c[_sig(c)]:
+                budget_c[_sig(c)] -= 1
+                kind = "reordered"
+            else:
+                added.append(c)
+                kind = "calls_added"
+        if kind in ("result_changed", "args_changed"):
+            out.append({"kind": kind, "severity": TRACE_SEVERITY[kind],
+                        "baseline": _call_view(b), "candidate": _call_view(c)})
+        if kind and first is None:
+            first = {"kind": "first_divergence",
+                     "severity": TRACE_SEVERITY["first_divergence"],
+                     "reason": kind, "event": (b or c)["event"],
+                     "baseline": _call_view(b) if b else None,
+                     "candidate": _call_view(c) if c else None}
+
+    for side, trace in (("baseline", base), ("candidate", cand)):
+        for entry in trace:
+            if entry["status"] == "denied":
+                out.append({"kind": "denied", "severity": TRACE_SEVERITY["denied"],
+                            "side": side, "call": _call_view(entry)})
+    if missing:
+        out.append({"kind": "calls_missing", "severity": TRACE_SEVERITY["calls_missing"],
+                    "side": "baseline", "calls": [_call_view(e) for e in missing]})
+    if added:
+        out.append({"kind": "calls_added", "severity": TRACE_SEVERITY["calls_added"],
+                    "side": "candidate", "calls": [_call_view(e) for e in added]})
+    if reordered:
+        out.append({"kind": "reordered", "severity": TRACE_SEVERITY["reordered"],
+                    "calls": [_call_view(e) for e in reordered]})
+    if first:
+        out.insert(0, first)
+    return out
+
+
+def _align(base: list, cand: list) -> list[tuple]:
+    """LCS over call signatures -> ordered ops: ("match", b, c),
+    ("base_only", b, None), ("cand_only", None, c). The forward walk over a
+    suffix table matches the *earliest* possible occurrence on each side, so
+    a re-run of an already-matched call surfaces as added, not matched."""
+    m, n = len(base), len(cand)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m - 1, -1, -1):
+        for j in range(n - 1, -1, -1):
+            if _sig(base[i]) == _sig(cand[j]):
+                dp[i][j] = dp[i + 1][j + 1] + 1
+            else:
+                dp[i][j] = max(dp[i + 1][j], dp[i][j + 1])
+    ops: list[tuple] = []
+    i = j = 0
+    while i < m and j < n:
+        if _sig(base[i]) == _sig(cand[j]) and dp[i][j] == dp[i + 1][j + 1] + 1:
+            ops.append(("match", base[i], cand[j]))
+            i, j = i + 1, j + 1
+        elif dp[i + 1][j] >= dp[i][j + 1]:
+            ops.append(("base_only", base[i], None))
+            i += 1
+        else:
+            ops.append(("cand_only", None, cand[j]))
+            j += 1
+    ops.extend(("base_only", e, None) for e in base[i:])
+    ops.extend(("cand_only", None, e) for e in cand[j:])
+    return ops
+
+
+def _pair_arg_changes(ops: list) -> list:
+    """Within one contiguous non-match run, the k-th baseline-only and k-th
+    candidate-only call with the same tool read as a single call whose
+    arguments changed (the unified-diff "changed line" heuristic); pairing
+    stops at the first tool mismatch."""
+    out: list[tuple] = []
+    run: list[tuple] = []
+
+    def flush() -> None:
+        dels = [b for op, b, _ in run if op == "base_only"]
+        inss = [c for op, _, c in run if op == "cand_only"]
+        paired = 0
+        for b, c in zip(dels, inss):
+            if b["tool"] != c["tool"]:
+                break
+            out.append(("args_changed", b, c))
+            paired += 1
+        out.extend(("base_only", b, None) for b in dels[paired:])
+        out.extend(("cand_only", None, c) for c in inss[paired:])
+        run.clear()
+
+    for op in ops:
+        if op[0] == "match":
+            flush()
+            out.append(op)
+        else:
+            run.append(op)
+    flush()
+    return out
+
+
+def _sig(entry: dict) -> tuple[str, str]:
+    return entry["tool"], entry["args_hash"]
+
+
+def _hash(value: Any) -> str:
+    canon = json.dumps(value, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:12]
+
+
+def _call_view(entry: dict) -> dict[str, Any]:
+    return {"event": entry["event"], "line": entry["line"],
+            "call": _call_repr(entry), "status": entry["status"],
+            "result": entry["result_head"], "duration_ms": entry["duration_ms"]}
+
+
+def _call_repr(entry: dict) -> str:
+    args = ", ".join(str(v) for v in entry["args"].values())
+    return f"{entry['tool']}({_compact(args, 60)})"
 
 
 def _diff_tree(base: dict, cand: dict, path: str, out: list) -> None:
@@ -282,6 +493,12 @@ def render_report(payload, ctx: RunContext) -> dict:
     if not payload["drift"]:
         lines.append("- none")
 
+    lines.extend(["", "## Trace divergence (behavior)"])
+    for item in payload["trace_divergence"] or []:
+        lines.extend(_render_trace_item(item))
+    if not payload["trace_divergence"]:
+        lines.append("- none — same tool calls, same order, same results")
+
     lines.extend(["", "## Outcome divergence (effect)"])
     for item in payload["divergence"] or []:
         lines.append(f"- [{item['severity']}] {item['dimension']}:"
@@ -304,11 +521,56 @@ def render_report(payload, ctx: RunContext) -> dict:
     return {
         "verdict": payload["verdict"],
         "drift": payload["drift"],
+        "trace_divergence": payload["trace_divergence"],
         "divergence": payload["divergence"],
         "outcomes": outcomes,
         "decisions": payload["decisions"],
         "report": "\n".join(lines),
     }
+
+
+def _render_trace_item(item: dict[str, Any]) -> list[str]:
+    kind, sev = item["kind"], item["severity"]
+    if kind == "first_divergence":
+        return [f"- [{sev}] first behavioral divergence at event {item['event']}"
+                f" ({item['reason']}):",
+                f"    baseline:  {_side_line(item['baseline'])}",
+                f"    candidate: {_side_line(item['candidate'])}"]
+    if kind == "result_changed":
+        b, c = item["baseline"], item["candidate"]
+        return [f"- [{sev}] result_changed at event {_event_ref(b, c)}: {b['call']}:"
+                f" {b['status']} \"{_compact(b['result'], 40)}\" ->"
+                f" {c['status']} \"{_compact(c['result'], 40)}\""]
+    if kind == "args_changed":
+        b, c = item["baseline"], item["candidate"]
+        return [f"- [{sev}] args_changed at event {_event_ref(b, c)}:"
+                f" {b['call']} -> {c['call']}"]
+    if kind == "denied":
+        call = item["call"]
+        return [f"- [{sev}] denied on {item['side']} at event {call['event']}:"
+                f" {call['call']}"]
+    if kind in ("calls_missing", "calls_added"):
+        where = "baseline only" if kind == "calls_missing" else "candidate only"
+        calls = "; ".join(v["call"] for v in item["calls"])
+        return [f"- [{sev}] {kind} ({where}): {calls}"]
+    if kind == "reordered":
+        calls = "; ".join(v["call"] for v in item["calls"])
+        return [f"- [{sev}] reordered (same calls, different order): {calls}"]
+    return [f"- [{sev}] {kind}"]
+
+
+def _side_line(view: dict[str, Any] | None) -> str:
+    if view is None:
+        return "(no call at this point)"
+    took = f" in {view['duration_ms']}ms" if view["duration_ms"] is not None else ""
+    result = f": \"{_compact(view['result'], 60)}\"" if view["result"] else ""
+    return f"L{view['line']} {view['call']} -> {view['status']}{took}{result}"
+
+
+def _event_ref(base: dict[str, Any], cand: dict[str, Any]) -> str:
+    if base["event"] == cand["event"]:
+        return str(base["event"])
+    return f"{base['event']}/{cand['event']}"
 
 
 def _render_divergence(item: dict[str, Any]) -> str:
