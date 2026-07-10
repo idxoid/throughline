@@ -224,7 +224,9 @@ class PresetTests(unittest.TestCase):
     def test_example_agent_audit_preset_end_to_end(self):
         flow = load_preset("examples/presets/agent-audit.toml")
         result = flow.run({})
-        self.assertEqual(result.output["verdict"], "drift_with_outcome_change")
+        self.assertEqual(result.output["verdict"], "drift_and_divergence")
+
+        # config drift (cause): recursive dotted-path diff, severity by category
         drift = {item["field"]: item for item in result.output["drift"]}
         self.assertEqual(
             set(drift),
@@ -238,12 +240,34 @@ class PresetTests(unittest.TestCase):
         # an added MCP server is one drift entry, not one per attribute
         self.assertIsNone(drift["mcp.lint"]["baseline"])
         self.assertEqual(drift["mcp.lint"]["candidate"]["command"], "mcp-lint")
+
+        # outcome divergence (effect): both runs are green, yet differ on
+        # every other axis — the point of a multidimensional outcome
+        base_out = result.output["outcomes"]["baseline"]
+        cand_out = result.output["outcomes"]["candidate"]
+        self.assertEqual(base_out["status"], "ok")
+        self.assertEqual(cand_out["status"], "ok")
+        divergence = {item["dimension"]: item for item in result.output["divergence"]}
+        self.assertNotIn("status", divergence)  # both green: status did NOT diverge
+        self.assertEqual(
+            set(divergence),
+            {"files_touched", "test_integrity", "risky_calls", "tokens"})
+        self.assertEqual(divergence["test_integrity"]["severity"], "high")
+        self.assertIn("tests/test_client.py", divergence["test_integrity"]["candidate"])
+        self.assertEqual(divergence["risky_calls"]["candidate"][0]["risk"],
+                         "pipe-to-shell")
+        self.assertGreaterEqual(divergence["tokens"]["ratio"], 1.5)
+
+        # decisions with transcript-line provenance
         self.assertEqual(len(result.output["decisions"]["baseline"]), 1)
         self.assertEqual(result.output["decisions"]["candidate"][0]["line"], 3)
+
+        # a secret leaked into a risky command is redacted from the report
         self.assertIn("[secret redacted]", result.output["report"])
         self.assertNotIn("sk-live", result.output["report"])
         self.assertEqual(result.metrics["counters"]["policy.redacted"], 1)
         self.assertGreater(result.metrics["counters"]["audit.drift"], 2)
+        self.assertGreater(result.metrics["counters"]["audit.divergence"], 2)
         self.assertEqual(result.violations, [])
         blame_steps = {entry["step"] for entry in result.lineage.blame()}
         self.assertIn("report", blame_steps)
