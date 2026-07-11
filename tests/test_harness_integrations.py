@@ -30,6 +30,28 @@ class TranscriptAdapterTests(unittest.TestCase):
         call = next(e for e in events if e["type"] == "tool_call")
         self.assertEqual(call["name"], "Read")
         self.assertEqual(call["call_id"], "toolu_1")
+        # a clean session ends ok (no negative signal on disk)
+        self.assertEqual(events[-1]["status"], "ok")
+
+    def test_claude_code_session_status_is_derived(self):
+        from throughline.adapters.transcripts import convert_events
+
+        def user(text):
+            return {"type": "user", "sessionId": "s1",
+                    "message": {"role": "user",
+                                "content": [{"type": "text", "text": text}]}}
+
+        interrupted = convert_events(
+            [user("do a thing"),
+             user("[Request interrupted by user]")])
+        self.assertEqual(interrupted[-1]["status"], "interrupted")
+
+        errored = convert_events(
+            [user("do a thing"),
+             {"type": "assistant", "sessionId": "s1", "isApiErrorMessage": True,
+              "message": {"role": "assistant",
+                          "content": [{"type": "text", "text": "overloaded"}]}}])
+        self.assertEqual(errored[-1]["status"], "error")
 
     def test_detect_and_convert_cursor(self):
         raw = read_jsonl(_TRANSCRIPTS / "cursor_sample.jsonl")
