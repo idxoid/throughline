@@ -225,6 +225,16 @@ class PresetTests(unittest.TestCase):
     def test_example_agent_audit_preset_end_to_end(self):
         flow = load_preset("examples/presets/agent-audit.toml")
         result = flow.run({})
+        self.assertEqual(result.output["readiness_gate"], "block")
+        self.assertTrue(result.output["readiness"]["baseline"]["can_start"])
+        self.assertFalse(result.output["readiness"]["candidate"]["can_start"])
+        cand_blockers = {b["id"] for b in
+                         result.output["readiness"]["candidate"]["blockers"]}
+        self.assertIn("repository_dirty", cand_blockers)
+        self.assertIn("workspace_snapshot_mismatch", cand_blockers)
+        self.assertIn("tool_denied", cand_blockers)
+        self.assertIn("sandbox_workaround_required", cand_blockers)
+        self.assertIn("Readiness gate: block", result.output["report"])
         self.assertEqual(result.output["verdict"], "drift_and_divergence")
 
         # config drift (cause): recursive dotted-path diff, severity by category
@@ -563,6 +573,38 @@ class PresetTests(unittest.TestCase):
         self.assertNotEqual(_result_hash("Bash", pytest_cmd, timing_a),
                             _result_hash("Bash", pytest_cmd,
                                          "2 failed, 2 passed"))
+
+    def test_example_agent_audit_readiness(self):
+        """Preflight gate: baseline is clean; candidate env blocks a fresh start."""
+        from examples.agent_audit import _readiness_for
+
+        def manifest(*, dirty=False, merkle="m-aaaa", commit="abc"):
+            return {"config": {
+                "repository": {"commit": commit, "dirty": dirty},
+                "workspace": {"merkle_root": merkle},
+                "network": {"mode": "restricted"},
+            }}
+
+        def trace_entry(event, tool, status, command="", result=""):
+            return {"event": event, "tool": tool, "status": status,
+                    "args": {"command": command}, "result_head": result}
+
+        base = _readiness_for(manifest(), [], {"risky_calls": []}, None)
+        self.assertTrue(base["can_start"])
+        self.assertEqual(base["blockers"], [])
+
+        ref = manifest(dirty=False, merkle="m-ref")
+        cand = _readiness_for(
+            manifest(dirty=True, merkle="m-other", commit="abc"),
+            [trace_entry(1, "Bash", "denied", "pip install aiohttp",
+                         "permission denied")],
+            {"risky_calls": [{"command": "curl | sh", "risk": "pipe-to-shell"}]},
+            ref,
+        )
+        self.assertFalse(cand["can_start"])
+        ids = {b["id"] for b in cand["blockers"]}
+        self.assertEqual(ids, {"repository_dirty", "workspace_snapshot_mismatch",
+                               "tool_denied", "sandbox_workaround_required"})
 
 
 class BuildFlowUnit(unittest.TestCase):

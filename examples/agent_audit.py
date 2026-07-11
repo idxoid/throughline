@@ -6,7 +6,8 @@ reasons. This preset audits two recorded agent sessions and answers with
 data instead of vibes:
 
     normalize -> load sessions -> build manifests -> assess outcomes
-              -> extract traces -> extract decisions -> diff runs -> render report
+              -> extract traces -> assess readiness -> extract decisions
+              -> diff runs -> render report
 
 Three layers, deliberately separate:
 
@@ -39,8 +40,13 @@ Three layers, deliberately separate:
   vanished risky call, a shrunken test suite, or a big token drop is still
   divergence — with a separate ``assessment`` (regression / improvement /
   neutral) judging direction. The **effect** side.
+- **readiness** ("preflight gate"): whether a run can *start* cleanly in the
+  recorded environment — pinned source snapshot (clean tree, Merkle root vs
+  reference at same commit), sandbox/tool denials, and whether a denial forced
+  a risky workaround. Distinct from post-hoc drift: a session can finish
+  ``status=ok`` yet fail readiness for the next run. The **gate** side.
 
-Decisions ride along as a fourth, softer channel: assistant sentences
+Decisions ride along as a fifth, softer channel: assistant sentences
 classed as **plan / decision / assumption / action**. Stage 1 is a
 deterministic marker table (auditable, replayable); stage 2 is the optional
 ``@semantic`` preset slot — filled here with a cheap cue heuristic so the
@@ -49,7 +55,10 @@ which may add classes the markers missed, never override or remove them. Every i
 keeps its evidence: the cue that fired, the sentence quote, and the quote's
 char span at its transcript line.
 
-`diff_runs` compares all three and renders a verdict over the pair. The session
+`diff_runs` compares completed runs (why two finished sessions differ).
+``assess_readiness`` answers the prior question: can a new run even start
+cleanly in this environment — manifest snapshot pinned, sandbox not blocking
+required tools, no workaround-only path to green. The session
 fixtures are a neutral JSONL shape (one event per line) modeled on what
 coding-agent harnesses record on disk; a real deployment would point the
 same flow at exported Claude Code / Cursor / Codex transcripts. Secrets
@@ -329,6 +338,98 @@ def _build_trace(events: list[dict]) -> tuple[list[dict[str, Any]], str]:
                 call["result_head"] = event.get("text", "")[:80]
                 call["duration_ms"] = event.get("duration_ms")
     return trace, ("inferred" if inferred else "exact")
+
+
+def assess_readiness(payload, ctx: RunContext) -> dict:
+    """Preflight gate per session: can a new run start cleanly here?
+
+    Uses the manifest (declared environment) plus trace evidence (denials,
+    workarounds). The candidate is checked against the baseline manifest as
+    the reference snapshot when both share a commit."""
+    reference = payload["manifests"]["baseline"]
+    readiness = {}
+    for label in ("baseline", "candidate"):
+        readiness[label] = _readiness_for(
+            payload["manifests"][label],
+            payload["traces"][label],
+            payload["outcomes"][label],
+            reference if label == "candidate" else None,
+        )
+        ctx.metric(f"audit.readiness.blockers.{label}",
+                   len(readiness[label]["blockers"]))
+        ctx.metric(f"audit.readiness.warnings.{label}",
+                   len(readiness[label]["warnings"]))
+    gate = _readiness_gate(readiness["candidate"])
+    ctx.metric("audit.readiness.gate", 1 if gate == "pass" else 0)
+    return {**payload, "readiness": readiness, "readiness_gate": gate}
+
+
+def _readiness_for(manifest: dict, trace: list, outcome: dict,
+                   reference: dict | None) -> dict[str, Any]:
+    config = manifest["config"]
+    blockers: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+
+    if config.get("repository", {}).get("dirty"):
+        blockers.append({
+            "id": "repository_dirty",
+            "detail": "Working tree is dirty; input source snapshot is not pinned.",
+        })
+
+    ref_config = reference["config"] if reference else None
+    if ref_config:
+        repo = config.get("repository", {})
+        ref_repo = ref_config.get("repository", {})
+        if repo.get("commit") == ref_repo.get("commit"):
+            ref_root = ref_config.get("workspace", {}).get("merkle_root")
+            root = config.get("workspace", {}).get("merkle_root")
+            if ref_root and root and ref_root != root:
+                blockers.append({
+                    "id": "workspace_snapshot_mismatch",
+                    "detail": (f"Same commit ({repo['commit']}) but workspace"
+                               f" merkle {root} != reference {ref_root}."),
+                })
+
+    denied = [entry for entry in trace if entry["status"] == "denied"]
+    for entry in denied:
+        blockers.append({
+            "id": "tool_denied",
+            "event": entry["event"],
+            "detail": (f"{entry['tool']} denied at event {entry['event']}:"
+                       f" {_compact(entry['result_head'], 60)}"),
+        })
+
+    if denied and outcome.get("risky_calls"):
+        blockers.append({
+            "id": "sandbox_workaround_required",
+            "detail": ("Sandbox denial forced a risky workaround"
+                       " before the run could proceed."),
+        })
+
+    if config.get("network", {}).get("mode") == "restricted":
+        for entry in trace:
+            if entry["tool"] != "Bash":
+                continue
+            command = entry.get("args", {}).get("command", "")
+            if not re.search(r"\b(?:pip install|curl|wget)\b", command):
+                continue
+            if entry["status"] in ("denied", "error"):
+                warnings.append({
+                    "id": "network_restricted",
+                    "event": entry["event"],
+                    "detail": (f"Restricted network blocked {command!r}"
+                               f" at event {entry['event']}."),
+                })
+
+    return {"can_start": not blockers, "blockers": blockers, "warnings": warnings}
+
+
+def _readiness_gate(candidate: dict) -> str:
+    if not candidate["can_start"]:
+        return "block"
+    if candidate["warnings"]:
+        return "warn"
+    return "pass"
 
 
 def extract_decisions(semantic=None):
@@ -776,10 +877,23 @@ def render_report(payload, ctx: RunContext) -> dict:
         f"# Agent run audit: {manifests['baseline']['session_id']}"
         f" vs {manifests['candidate']['session_id']}",
         "",
+        f"Readiness gate: {payload['readiness_gate']}"
+        f" (can a new run start cleanly in the candidate environment?)",
         f"Verdict: {payload['verdict']}",
         "",
-        "## Config drift (cause)",
+        "## Environment readiness (preflight)",
     ]
+    for label in ("baseline", "candidate"):
+        ready = payload["readiness"][label]
+        status = "yes" if ready["can_start"] else "no"
+        lines.append(f"- {label}: can_start={status}")
+        for item in ready["blockers"]:
+            lines.append(f"    [blocker] {item['id']}: {item['detail']}")
+        for item in ready["warnings"]:
+            lines.append(f"    [warning] {item['id']}: {item['detail']}")
+        if not ready["blockers"] and not ready["warnings"]:
+            lines.append("    (no blockers or warnings)")
+    lines.extend(["", "## Config drift (cause)"])
     for item in payload["drift"] or []:
         lines.append(f"- [{item['severity']}] {item['field']}:"
                      f" {_compact(item['baseline'])} -> {_compact(item['candidate'])}")
@@ -823,6 +937,8 @@ def render_report(payload, ctx: RunContext) -> dict:
                      f" | {len(outcome['files_touched'])} file(s)")
     return {
         "verdict": payload["verdict"],
+        "readiness_gate": payload["readiness_gate"],
+        "readiness": payload["readiness"],
         "drift": payload["drift"],
         "trace_quality": payload["trace_quality"],
         "trace_divergence": payload["trace_divergence"],

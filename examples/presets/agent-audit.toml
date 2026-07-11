@@ -1,5 +1,6 @@
 # Example agent-audit preset: reproducibility audit of two recorded agent
-# sessions — run manifests ("lockfile"), config drift diff, tool-call trace
+# sessions — environment readiness gate (preflight), run manifests ("lockfile"),
+# config drift diff, tool-call trace
 # alignment (call_id-paired with exact/inferred quality, first behavioral
 # divergence), symmetric multidimensional outcome diff (change recorded both
 # directions + regression/improvement assessment), two-stage classed
@@ -8,7 +9,7 @@
 # bundled fixtures. Run from the repository root:
 #   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run agent-audit -i "audit" --json --blame
 name = "agent-audit"
-description = "Agent workflow audit: manifest + trace + outcome fingerprint -> drift/divergence diff -> report, with secret redaction."
+description = "Agent workflow audit: readiness gate + manifest + trace + outcome fingerprint -> drift/divergence diff -> report, with secret redaction."
 
 # Stage 2 of decision extraction. The default is a deterministic cue
 # heuristic so the example runs offline; fill with an LLM-backed extractor
@@ -47,6 +48,10 @@ uses = "examples.agent_audit:extract_traces"
 name = "traces"
 
 [[steps]]
+uses = "examples.agent_audit:assess_readiness"
+name = "readiness"
+
+[[steps]]
 uses = "examples.agent_audit:extract_decisions"
 name = "decisions"
 [steps.with]
@@ -74,7 +79,10 @@ scope = "final"
 on_fail = "raise"
 [middleware.validate.schema]
 type = "object"
-required = ["verdict", "drift", "trace_quality", "trace_divergence", "divergence", "outcomes", "decisions", "report"]
+required = ["verdict", "readiness_gate", "readiness", "drift", "trace_quality", "trace_divergence", "divergence", "outcomes", "decisions", "report"]
+[middleware.validate.schema.properties.readiness_gate]
+type = "string"
+enum = ["pass", "warn", "block"]
 [middleware.validate.schema.properties.verdict]
 type = "string"
 enum = ["clean", "config_drift", "execution_divergence", "drift_and_divergence"]
