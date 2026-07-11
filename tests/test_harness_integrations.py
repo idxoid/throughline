@@ -117,6 +117,19 @@ class HarnessExtractTests(unittest.TestCase):
         self.assertNotIn("secret-value", json.dumps(cfg))
         self.assertIn("demo", cfg["mcp"])
 
+    def test_short_hex_env_value_is_hashed_not_passed_through(self):
+        # A raw env secret that happens to be short hex (deadbeef) must be
+        # hashed, not mistaken for an already-stored digest.
+        from throughline.manifest.harness import _mcp_from_servers
+
+        out = _mcp_from_servers({"s": {"command": "x", "env": {"K": "deadbeef"}}})
+        self.assertNotEqual(out["s"]["env"]["K"], "deadbeef")
+        self.assertEqual(len(out["s"]["env"]["K"]), 64)
+        # A full 64-char digest is left as-is (no double hashing).
+        digest = "a" * 64
+        again = _mcp_from_servers({"s": {"command": "x", "env": {"K": digest}}})
+        self.assertEqual(again["s"]["env"]["K"], digest)
+
 
 class LockfileCliTests(unittest.TestCase):
     def test_capture_update_verify_roundtrip(self):

@@ -192,10 +192,14 @@ def _mcp_from_servers(servers: dict[str, Any]) -> dict[str, Any]:
 
 
 def _looks_hashed(value: Any) -> bool:
-    """True for full SHA-256 or legacy short hex digests already stored."""
-    if not isinstance(value, str):
-        return False
-    if len(value) not in (8, 12, 64):
+    """True only for a full SHA-256 digest already stored (e.g. codex env,
+    pre-hashed in ``_codex_config``), so it is not hashed a second time.
+
+    Deliberately does *not* treat short hex strings as hashed: an 8- or
+    12-char hex secret (``deadbeef``) is a real value on the capture path and
+    must still be hashed. Only a 64-char lowercase-hex digest is skipped.
+    """
+    if not isinstance(value, str) or len(value) != 64:
         return False
     return all(ch in "0123456789abcdef" for ch in value)
 
