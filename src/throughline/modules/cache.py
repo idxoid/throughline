@@ -4,12 +4,13 @@ Two modes on one class:
 
   * run-level (default, ``step=None``): the incoming payload is looked up in
     ``on_run_start``; a hit raises EarlyReturn — the whole pipeline is
-    skipped. Place Cache AFTER the observers (Observe, MetricsMiddleware)
-    and BEFORE everything else: a hit short-circuits every layer inside it,
-    so an outermost Cache would fire before the observers attach and the hit
-    would be invisible (no cache.hits metric, no cache_hit event).
+    skipped. Phase is ``short_circuit``: Flow rejects stacks where
+    ManifestGate / Policy would be skipped on a hit. Place Cache AFTER
+    Observe/Metrics → ManifestGate → Policy. An outermost Cache also makes
+    hits invisible to observers (no cache.hits metric / cache_hit event).
   * step-level (``step="llm*"``): only matching steps are memoized
-    (payload -> output); the rest of the pipeline still runs.
+    (payload -> output); phase stays ``default`` because ``on_run_start``
+    is not short-circuited.
 
 Exact matching is the zero-dependency default: the payload is canonicalized
 (sorted JSON) and hashed. Pass ``embedder`` (any ``text -> vector`` callable —
@@ -194,6 +195,8 @@ class Cache(Middleware):
             field = key
             key = lambda p: p.get(field, p) if isinstance(p, dict) else p  # noqa: E731
         self.step = step
+        # Run-level cache EarlyReturns from on_run_start; step-level does not.
+        self.phase = "short_circuit" if step is None else "default"
         self.key_fn = key
         self.version = version
         self.copy = copy

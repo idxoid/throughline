@@ -104,6 +104,20 @@ class ManifestVerifyError(ThroughlineError):
         self.violations = violations or []
 
 
+class MiddlewareOrderError(ThroughlineError):
+    """Middleware stack order would let a short-circuit skip protected ingress.
+
+    Attributes:
+        earlier: middleware that short-circuits (typically run-level Cache).
+        later:   protected middleware that would be skipped (ManifestGate, Policy).
+    """
+
+    def __init__(self, message: str, *, earlier: str = "", later: str = ""):
+        super().__init__(message)
+        self.earlier = earlier
+        self.later = later
+
+
 class ValidationError(ThroughlineError):
     """A validator rejected a payload.
 

@@ -15,6 +15,33 @@ _SKIP_DIRS = frozenset({
     ".git", "__pycache__", ".pytest_cache", "node_modules", ".venv", "venv",
 })
 
+# Fields the harness may declare (agent config the OS cannot observe).
+HARNESS_KEYS = frozenset({
+    "model",
+    "harness",
+    "prompt",
+    "skills",
+    "mcp",
+    "tools",
+    "network",
+    "dependencies",
+    "execution",
+})
+
+# Fields always measured from the live workspace / process — never from harness.
+LIVE_KEYS = frozenset({
+    "repository",
+    "runtime",
+    "workspace",
+    "environment",
+})
+
+# Top-level sections of a provenance-structured capture.
+PROVENANCE_SECTIONS = frozenset({"live", "harness"})
+
+SOURCE_LIVE_PROBE = "live_probe"
+SOURCE_HARNESS = "harness"
+
 
 def env_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
@@ -92,6 +119,49 @@ def _hash_files(root: Path, paths: Iterable[Path]) -> str:
     return f"m-{combined}"
 
 
+def flatten_observed(observed: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge provenance sections into a flat manifest for lockfile verify.
+
+    Structured captures use ``{"live": ..., "harness": ...}``. Flat (legacy
+    or hand-built) dicts are returned unchanged so ``verify_manifest`` keeps
+    working on either shape.
+    """
+    if (
+        "live" in observed
+        and set(observed) <= PROVENANCE_SECTIONS
+        and isinstance(observed.get("live"), Mapping)
+    ):
+        flat = dict(observed["live"])
+        harness = observed.get("harness") or {}
+        if isinstance(harness, Mapping):
+            _reject_harness_live_keys(harness)
+            flat.update({key: value for key, value in harness.items()
+                         if key in HARNESS_KEYS})
+        return flat
+    return dict(observed)
+
+
+def observed_sources(observed: Mapping[str, Any]) -> dict[str, str]:
+    """Map each top-level field to ``live_probe`` or ``harness``."""
+    if "live" in observed and set(observed) <= PROVENANCE_SECTIONS:
+        sources: dict[str, str] = {}
+        live = observed.get("live") or {}
+        harness = observed.get("harness") or {}
+        if isinstance(live, Mapping):
+            sources.update({key: SOURCE_LIVE_PROBE for key in live})
+        if isinstance(harness, Mapping):
+            _reject_harness_live_keys(harness)
+            sources.update({key: SOURCE_HARNESS for key in harness
+                            if key in HARNESS_KEYS})
+        return sources
+    # Flat capture: classify by known key sets.
+    return {
+        key: (SOURCE_LIVE_PROBE if key in LIVE_KEYS else SOURCE_HARNESS)
+        for key in observed
+        if key in LIVE_KEYS or key in HARNESS_KEYS
+    }
+
+
 def capture_environment(
     root: str | Path = ".",
     *,
@@ -99,19 +169,43 @@ def capture_environment(
     env_allowlist: Sequence[str] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Build the observed manifest for live verify.
+    """Build a provenance-structured observed manifest.
 
-    Observable facts come from the workspace and process environment.
-    Harness-supplied fields (model, prompt, MCP, tools, …) are merged
-    from ``harness`` because the OS cannot infer effective agent config.
+    Returns::
+
+        {
+            "live": {repository, runtime, workspace, environment},
+            "harness": {model, prompt, mcp, tools, ...},  # attested only
+        }
+
+    Throughline measures ``live`` directly. Harness fields are attested by
+    the adapter — the OS cannot observe effective model/tools/prompts.
+    Live-observed keys in ``harness`` are rejected so declared config
+    cannot spoof repository / workspace / runtime / environment.
+
+    Use ``flatten_observed`` when comparing against a flat lockfile.
     """
     root = Path(root).resolve()
-    observed: dict[str, Any] = {
+    live: dict[str, Any] = {
         "repository": git_snapshot(root),
         "runtime": runtime_snapshot(),
         "workspace": {"merkle_root": workspace_merkle_root(root)},
         "environment": env_hashes(env_allowlist or (), environ),
     }
+    attested: dict[str, Any] = {}
     if harness:
-        observed.update(harness)
-    return observed
+        _reject_harness_live_keys(harness)
+        attested = {
+            key: value
+            for key, value in harness.items()
+            if key in HARNESS_KEYS
+        }
+    return {"live": live, "harness": attested}
+
+
+def _reject_harness_live_keys(harness: Mapping[str, Any]) -> None:
+    collisions = LIVE_KEYS.intersection(harness)
+    if collisions:
+        raise ValueError(
+            f"harness cannot supply live-observed fields: {sorted(collisions)}"
+        )

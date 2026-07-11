@@ -7,7 +7,7 @@ from typing import Any, Iterable, Sequence
 
 from .context import Result, RunContext
 from .errors import EarlyReturn, FlowError
-from .middleware import Handled, Middleware
+from .middleware import Handled, Middleware, check_middleware_order
 from .step import Step, as_step, _run_fn
 
 
@@ -16,6 +16,7 @@ class Flow:
                  name: str = "flow", config: dict | None = None):
         self.steps: list[Step] = [as_step(s) for s in steps]
         self.middleware: list[Middleware] = list(middleware)
+        check_middleware_order(self.middleware)
         self.name = name
         self.config = dict(config or {})
 

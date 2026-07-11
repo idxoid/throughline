@@ -13,6 +13,11 @@ the OUTERMOST layer. Hooks:
 Every hook is optional; returning None from the payload/output hooks means
 "unchanged" — so observers never have to remember to return values.
 
+Phases (``Middleware.phase``) document stack position. Flow construction
+rejects ``short_circuit`` (run-level Cache) placed before ``security_ingress``
+(ManifestGate) or ``policy`` — those hooks must not be skipped on a cache hit.
+Recommended order: Observe/Metrics → ManifestGate → Policy → Cache → …
+
 The EarlyReturn contract (formal — see Flow.run for the full spec):
 
   * EarlyReturn skips the remaining on_run_start hooks, the remaining steps
@@ -34,10 +39,25 @@ The EarlyReturn contract (formal — see Flow.run for the full spec):
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from .context import RunContext
 from .step import Step
+
+
+# Declared stack phases. List order is outermost-first; short_circuit middleware
+# may EarlyReturn from on_run_start and skip everything after it — so phases
+# that must always run (security_ingress, policy) cannot follow short_circuit.
+PHASE_ORDER: tuple[str, ...] = (
+    "observe",
+    "security_ingress",
+    "policy",
+    "short_circuit",
+    "default",
+)
+
+# Phases that must not be skipped by a run-level EarlyReturn ahead of them.
+_PROTECTED_FROM_SHORT_CIRCUIT = frozenset({"security_ingress", "policy"})
 
 
 class Handled:
@@ -51,6 +71,7 @@ class Handled:
 
 class Middleware:
     name: str = "middleware"
+    phase: str = "default"
 
     def on_run_start(self, ctx: RunContext, payload: Any) -> Any:
         return payload
@@ -74,3 +95,31 @@ class Middleware:
 
     def __repr__(self) -> str:  # helps in flow reprs / debugging
         return f"<{type(self).__name__}>"
+
+
+def check_middleware_order(middleware: Sequence[Middleware]) -> None:
+    """Raise ``MiddlewareOrderError`` if short-circuit can bypass protected ingress.
+
+    Run-level Cache (phase ``short_circuit``) raises EarlyReturn from
+    ``on_run_start``, which skips remaining start hooks. ManifestGate
+    (``security_ingress``) and Policy (``policy``) must therefore appear
+    earlier in the stack (outer / before the short-circuiter).
+    """
+    short_circuit: Middleware | None = None
+    for mw in middleware:
+        phase = getattr(mw, "phase", "default") or "default"
+        if phase == "short_circuit":
+            if short_circuit is None:
+                short_circuit = mw
+            continue
+        if short_circuit is not None and phase in _PROTECTED_FROM_SHORT_CIRCUIT:
+            from .errors import MiddlewareOrderError
+            raise MiddlewareOrderError(
+                f"{type(mw).__name__} (phase={phase!r}) cannot follow "
+                f"{type(short_circuit).__name__} (phase='short_circuit'): "
+                f"a run-level cache hit would skip {type(mw).__name__}. "
+                f"Recommended order: Observe/Metrics → ManifestGate → "
+                f"Policy → Cache.",
+                earlier=type(short_circuit).__name__,
+                later=type(mw).__name__,
+            )

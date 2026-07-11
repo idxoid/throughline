@@ -3,8 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from throughline.manifest import (DEFAULT_VERIFY_POLICY, capture_environment,
-                                    env_hash, verify_manifest)
+from throughline.manifest import (DEFAULT_VERIFY_POLICY, SOURCE_HARNESS,
+                                    SOURCE_LIVE_PROBE, capture_environment,
+                                    env_hash, flatten_observed, observed_sources,
+                                    verify_manifest)
 from throughline.manifest.capture import git_snapshot, workspace_merkle_root
 from throughline.manifest.verify import load_lockfile, policy_action
 
@@ -103,7 +105,7 @@ class ManifestCaptureTests(unittest.TestCase):
         self.assertEqual(len(env_hash("secret-value")), 8)
         self.assertEqual(env_hash("x"), env_hash("x"))
 
-    def test_capture_merges_harness_fields(self):
+    def test_capture_separates_live_and_harness_provenance(self):
         with tempfile.TemporaryDirectory() as tmp:
             observed = capture_environment(
                 tmp,
@@ -111,9 +113,76 @@ class ManifestCaptureTests(unittest.TestCase):
                 env_allowlist=("HOME",),
                 environ={"HOME": "/tmp/home"},
             )
-        self.assertEqual(observed["model"]["id"], "test-model")
-        self.assertIn("HOME", observed["environment"])
-        self.assertIn("dirty", observed["repository"])
+        self.assertEqual(set(observed), {"live", "harness"})
+        self.assertEqual(observed["harness"]["model"]["id"], "test-model")
+        self.assertIn("HOME", observed["live"]["environment"])
+        self.assertIn("dirty", observed["live"]["repository"])
+        self.assertNotIn("model", observed["live"])
+        self.assertNotIn("repository", observed["harness"])
+        sources = observed_sources(observed)
+        self.assertEqual(sources["repository"], SOURCE_LIVE_PROBE)
+        self.assertEqual(sources["model"], SOURCE_HARNESS)
+
+    def test_harness_cannot_supply_live_observed_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError) as caught:
+                capture_environment(
+                    tmp,
+                    harness={
+                        "repository": {"commit": "fake", "dirty": False},
+                        "model": {"id": "test-model"},
+                    },
+                )
+        self.assertIn("live-observed fields", str(caught.exception))
+        self.assertIn("repository", str(caught.exception))
+
+    def test_flatten_rejects_harness_live_field_override(self):
+        observed = {
+            "live": {"repository": {"commit": "real", "dirty": True}},
+            "harness": {
+                "repository": {"commit": "fake", "dirty": False},
+                "model": {"id": "test-model"},
+            },
+        }
+        with self.assertRaises(ValueError) as caught:
+            flatten_observed(observed)
+        self.assertIn("live-observed fields", str(caught.exception))
+        self.assertIn("repository", str(caught.exception))
+
+    def test_observed_sources_rejects_harness_live_field_override(self):
+        observed = {
+            "live": {"workspace": {"merkle_root": "m-real"}},
+            "harness": {
+                "workspace": {"merkle_root": "m-fake"},
+                "model": {"id": "test-model"},
+            },
+        }
+        with self.assertRaises(ValueError):
+            observed_sources(observed)
+
+    def test_declared_config_cannot_spoof_live_workspace(self):
+        from throughline.manifest import verify_live
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tracked.py").write_text("live-content", encoding="utf-8")
+            declared = {
+                "repository": {
+                    "commit": "fake",
+                    "dirty": False,
+                },
+                "workspace": {
+                    "merkle_root": "m-fake",
+                },
+                "model": {
+                    "id": "test-model",
+                },
+            }
+            observed, _ = verify_live(declared, root=root)
+
+        self.assertNotEqual(observed["live"]["repository"]["commit"], "fake")
+        self.assertNotEqual(observed["live"]["workspace"]["merkle_root"], "m-fake")
+        self.assertEqual(observed["harness"]["model"]["id"], "test-model")
 
     def test_workspace_merkle_changes_when_files_change(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,9 +219,11 @@ class ManifestCaptureTests(unittest.TestCase):
                 "prompt": {"system_sha256": "beefcafe"},
             },
         )
-        expected = dict(observed)
-        result = verify_manifest(expected, observed)
+        flat = flatten_observed(observed)
+        result = verify_manifest(flat, flat)
         self.assertEqual(result.gate, "pass")
+        self.assertEqual(flat["model"]["id"], "claude-opus-4-8")
+        self.assertIn("repository", flat)
 
 
 if __name__ == "__main__":

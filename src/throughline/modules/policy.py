@@ -175,6 +175,7 @@ class Policy(Middleware):
     """
 
     name = "policy"
+    phase = "policy"
 
     def __init__(self, ingress: Sequence[Callable | str] | None = None,
                  egress: Sequence[Callable | str] | None = None,

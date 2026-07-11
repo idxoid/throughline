@@ -1,13 +1,17 @@
 """Live environment manifest capture and policy-based verification.
 
-``capture_environment`` probes the current workspace; ``verify_manifest``
-diffs an expected lockfile against observed facts and returns pass/warn/block.
-``ManifestGate`` wires that check into a Flow before steps run, while session
-helpers let external harnesses record the same observed facts for post-hoc
-audit.
+``capture_environment`` probes the workspace into a provenance-structured
+manifest (``live`` vs ``harness``-attested). ``verify_manifest`` diffs a
+lockfile against the flat view (``flatten_observed``). ``ManifestGate``
+wires that check into a Flow; session helpers record the same facts for
+post-hoc audit with an honest guarantee: Throughline verified the
+workspace directly and verified harness-attested agent configuration.
 """
 
-from .capture import capture_environment, env_hash, git_snapshot, runtime_snapshot
+from .capture import (HARNESS_KEYS, LIVE_KEYS, PROVENANCE_SECTIONS,
+                      SOURCE_HARNESS, SOURCE_LIVE_PROBE, capture_environment,
+                      env_hash, flatten_observed, git_snapshot, observed_sources,
+                      runtime_snapshot)
 from .session import (SessionRecorder, capture_drift, declared_config,
                       effective_environment, preflight_session_start,
                       session_start_event, verify_live)
@@ -16,6 +20,11 @@ from .verify import (DEFAULT_VERIFY_POLICY, VerifyResult, Violation,
 
 __all__ = [
     "DEFAULT_VERIFY_POLICY",
+    "HARNESS_KEYS",
+    "LIVE_KEYS",
+    "PROVENANCE_SECTIONS",
+    "SOURCE_HARNESS",
+    "SOURCE_LIVE_PROBE",
     "SessionRecorder",
     "VerifyResult",
     "Violation",
@@ -24,8 +33,10 @@ __all__ = [
     "declared_config",
     "effective_environment",
     "env_hash",
+    "flatten_observed",
     "git_snapshot",
     "load_lockfile",
+    "observed_sources",
     "policy_action",
     "preflight_session_start",
     "runtime_snapshot",

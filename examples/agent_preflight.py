@@ -40,8 +40,21 @@ def render_report(payload, ctx: RunContext) -> dict[str, Any]:
     if not public.get("violations"):
         lines.append("- no violations")
     lines.extend(["", "## Observed snapshot"])
-    for key in sorted(public.get("observed", {})):
-        lines.append(f"- {key}: {_compact(public['observed'][key])}")
+    observed = public.get("observed") or {}
+    if "live" in observed and set(observed) <= {"live", "harness"}:
+        lines.append("### Live probe (measured by Throughline)")
+        for key in sorted(observed.get("live") or {}):
+            lines.append(f"- {key}: {_compact(observed['live'][key])}")
+        lines.append("### Harness-attested (adapter-reported)")
+        harness = observed.get("harness") or {}
+        if harness:
+            for key in sorted(harness):
+                lines.append(f"- {key}: {_compact(harness[key])}")
+        else:
+            lines.append("- (none)")
+    else:
+        for key in sorted(observed):
+            lines.append(f"- {key}: {_compact(observed[key])}")
 
     return {
         "gate": public["gate"],

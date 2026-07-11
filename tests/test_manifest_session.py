@@ -21,10 +21,12 @@ class ManifestSessionTests(unittest.TestCase):
             config, result = preflight_session_start(
                 _HARNESS, root=tmp, lockfile=str(_LOCK))
         self.assertIn("observed", config)
-        self.assertIn("repository", config["observed"])
+        self.assertIn("repository", config["observed"]["live"])
         self.assertEqual(config["verify"]["gate"], "pass")
         self.assertIsNotNone(result)
         self.assertEqual(declared_config(config)["model"], _HARNESS["model"])
+        self.assertIn("model", config["observed"]["harness"])
+        self.assertNotIn("model", config["observed"]["live"])
 
     def test_preflight_blocks_when_declared_lies_about_temperature(self):
         lied = json.loads(json.dumps(_HARNESS))
@@ -60,6 +62,18 @@ class ManifestSessionTests(unittest.TestCase):
     def test_effective_environment_prefers_observed_workspace_facts(self):
         manifest = {
             "config": {"repository": {"dirty": False}, "model": {"id": "x"}},
+            "observed": {
+                "live": {"repository": {"dirty": True}},
+                "harness": {"model": {"id": "x"}},
+            },
+        }
+        env = effective_environment(manifest)
+        self.assertTrue(env["repository"]["dirty"])
+        self.assertEqual(env["model"]["id"], "x")
+
+    def test_effective_environment_accepts_flat_legacy_observed(self):
+        manifest = {
+            "config": {"repository": {"dirty": False}, "model": {"id": "x"}},
             "observed": {"repository": {"dirty": True}},
         }
         env = effective_environment(manifest)
@@ -87,8 +101,13 @@ class ManifestSessionAuditTests(unittest.TestCase):
         manifest = {
             "config": {"repository": {"dirty": False, "commit": "abc"},
                        "workspace": {"merkle_root": "m-a"}},
-            "observed": {"repository": {"dirty": True, "commit": "abc"},
-                         "workspace": {"merkle_root": "m-a"}},
+            "observed": {
+                "live": {
+                    "repository": {"dirty": True, "commit": "abc"},
+                    "workspace": {"merkle_root": "m-a"},
+                },
+                "harness": {},
+            },
         }
         ready = _readiness_for(manifest, [], {"risky_calls": []}, None)
         self.assertFalse(ready["can_start"])

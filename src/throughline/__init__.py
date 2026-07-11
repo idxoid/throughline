@@ -27,10 +27,11 @@ Quickstart:
 
 from .context import EventBus, Result, RunContext
 from .errors import (ArtifactExpired, EarlyReturn, FlowError, ThroughlineError,
-                     ManifestVerifyError, PolicyError, PresetError, QuotaExceeded,
-                     RegistryError, StoreError, ValidationError, WrapError)
+                     ManifestVerifyError, MiddlewareOrderError, PolicyError,
+                     PresetError, QuotaExceeded, RegistryError, StoreError,
+                     ValidationError, WrapError)
 from .flow import Flow
-from .middleware import Handled, Middleware
+from .middleware import Handled, Middleware, PHASE_ORDER, check_middleware_order
 from .presets import build_flow, find_preset, list_presets, load_preset, load_preset_config
 from .registry import (KINDS, available, check_kind, entries, load_plugins,
                        register, register_kind, resolve, unavailable)
@@ -43,7 +44,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Flow", "Step", "step", "as_step", "map_step", "parallel", "branch",
-    "Middleware", "Handled",
+    "Middleware", "Handled", "PHASE_ORDER", "check_middleware_order",
     "RunContext", "Result", "EventBus",
     "register", "register_kind", "resolve", "available", "entries",
     "unavailable", "load_plugins",
@@ -54,6 +55,7 @@ __all__ = [
     "ThroughlineError", "FlowError", "ValidationError", "RegistryError", "PresetError",
     "WrapError", "StoreError", "ArtifactExpired",
     "EarlyReturn", "QuotaExceeded", "PolicyError", "ManifestVerifyError",
+    "MiddlewareOrderError",
     "adapters", "modules", "manifest",
     "__version__",
 ]

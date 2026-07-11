@@ -206,6 +206,13 @@ class CacheComposition(unittest.TestCase):
         records = second.ctx.artifacts["policy"]
         self.assertEqual(records[0]["checkpoint"], "egress")
 
+    def test_cache_before_policy_is_rejected(self):
+        with self.assertRaises(tl.MiddlewareOrderError) as caught:
+            tl.Flow([lambda p: p],
+                    middleware=[Cache(), Policy(ingress=[deny_attacks])])
+        self.assertEqual(caught.exception.earlier, "Cache")
+        self.assertEqual(caught.exception.later, "Policy")
+
     def test_ingress_deny_caches_nothing(self):
         # PolicyError from on_run_start is a real failure: no on_run_end
         # hooks run, so Cache never stores the denied request

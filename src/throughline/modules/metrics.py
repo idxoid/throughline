@@ -55,6 +55,7 @@ class MetricsMiddleware(Middleware):
     """Publishes a Metrics collector to ctx.artifacts["metrics"] and times steps."""
 
     name = "metrics"
+    phase = "observe"
 
     def __init__(self, collector: Metrics | None = None):
         self._external = collector  # share one collector across runs if given

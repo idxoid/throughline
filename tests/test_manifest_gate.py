@@ -72,7 +72,50 @@ class ManifestGateTests(unittest.TestCase):
         self.assertEqual(result.output["gate"], "pass")
         self.assertEqual(result.output["violations"], [])
         self.assertIn("Gate: pass", result.output["report"])
-        self.assertIn("model", result.output["observed"])
+        self.assertIn("Live probe", result.output["report"])
+        self.assertIn("Harness-attested", result.output["report"])
+        self.assertIn("model", result.output["observed"]["harness"])
+        self.assertIn("repository", result.output["observed"]["live"])
+
+    def test_cache_before_manifest_gate_is_rejected(self):
+        with self.assertRaises(tl.MiddlewareOrderError) as caught:
+            tl.Flow(
+                [lambda p: p],
+                middleware=[
+                    tl.modules.Cache(),
+                    ManifestGate(lockfile=str(_LOCKFILE), root=str(_REPO)),
+                ],
+            )
+        self.assertEqual(caught.exception.earlier, "Cache")
+        self.assertEqual(caught.exception.later, "ManifestGate")
+
+    def test_manifest_gate_before_cache_is_allowed(self):
+        flow = tl.Flow(
+            [lambda p: p],
+            middleware=[
+                ManifestGate(lockfile=str(_LOCKFILE), root=str(_REPO)),
+                tl.modules.Cache(),
+            ],
+        )
+        self.assertEqual(flow.middleware[0].phase, "security_ingress")
+        self.assertEqual(flow.middleware[1].phase, "short_circuit")
+
+    def test_step_level_cache_before_manifest_gate_is_allowed(self):
+        # Step-level cache does not EarlyReturn from on_run_start.
+        flow = tl.Flow(
+            [lambda p: p],
+            middleware=[
+                tl.modules.Cache(step="report"),
+                ManifestGate(lockfile=str(_LOCKFILE), root=str(_REPO)),
+            ],
+        )
+        self.assertEqual(flow.middleware[0].phase, "default")
+
+    def test_phase_order_places_short_circuit_before_default_layers(self):
+        self.assertLess(
+            tl.PHASE_ORDER.index("short_circuit"),
+            tl.PHASE_ORDER.index("default"),
+        )
 
     def test_agent_preflight_output_redacts_secret_like_manifest_values(self):
         from examples.agent_preflight import render_report

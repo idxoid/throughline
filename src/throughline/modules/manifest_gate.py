@@ -1,7 +1,11 @@
 """Ingress middleware: live manifest capture + policy verify before steps run.
 
-Recommended stack position: Observe/Metrics → ManifestGate → Policy → Cache → …
-so cache hits cannot bypass environment verification.
+Stack phase: ``security_ingress``. Required order:
+
+    Observe/Metrics → ManifestGate → Policy → Cache → …
+
+Flow construction rejects Cache (``short_circuit``) placed before this gate:
+a run-level cache hit raises EarlyReturn and would skip live verification.
 """
 
 from __future__ import annotations
@@ -11,18 +15,15 @@ from typing import Any, Literal
 
 from ..context import RunContext
 from ..errors import ManifestVerifyError
+from ..manifest.capture import HARNESS_KEYS
 from ..manifest.verify import DEFAULT_VERIFY_POLICY, VerifyResult, load_lockfile
 from ..manifest.session import verify_live
 from ..middleware import Middleware
 
-_HARNESS_KEYS = frozenset({
-    "model", "harness", "prompt", "skills", "mcp", "tools", "network",
-    "dependencies", "execution",
-})
-
 
 class ManifestGate(Middleware):
     name = "manifest_gate"
+    phase = "security_ingress"
 
     def __init__(
         self,
@@ -76,8 +77,6 @@ class ManifestGate(Middleware):
                 ctx.metric("manifest.verify.warned", 1)
                 ctx.emit("manifest_verify_warn", gate=result.gate,
                            violations=len(result.violations))
-        else:
-            ctx.metric("manifest.verify.passed", 1)
         return payload
 
     def _record_gate(self, ctx: RunContext, result: VerifyResult) -> None:
@@ -102,7 +101,8 @@ class ManifestGate(Middleware):
 
 def _harness_from(cfg: dict) -> dict[str, Any]:
     harness = dict(cfg.get("harness_config") or {})
-    for key in _HARNESS_KEYS:
+    for key in HARNESS_KEYS:
         if key in cfg and key not in harness:
             harness[key] = cfg[key]
-    return harness
+    # Drop any live-observed keys that slipped into harness_config.
+    return {key: value for key, value in harness.items() if key in HARNESS_KEYS}

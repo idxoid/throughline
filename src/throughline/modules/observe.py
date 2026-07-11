@@ -78,6 +78,7 @@ class Observe(Middleware):
     """
 
     name = "observe"
+    phase = "observe"
 
     def __init__(self, *sinks: Callable[[dict], None] | str,
                  sink: str | None = None, otel: bool = False, memory_limit: int = 10_000):

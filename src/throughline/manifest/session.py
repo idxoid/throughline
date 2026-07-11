@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..errors import ManifestVerifyError
-from .capture import capture_environment
+from .capture import HARNESS_KEYS, LIVE_KEYS, capture_environment, flatten_observed
 from .diff import diff_tree
 from .verify import (DEFAULT_VERIFY_POLICY, VerifyResult, load_lockfile,
                      verify_manifest)
@@ -43,16 +43,24 @@ def verify_live(
     expected: dict[str, Any] | None = None,
     policy: dict[str, Literal["block", "warn", "ignore"]] | None = None,
 ) -> tuple[dict[str, Any], VerifyResult | None]:
-    """Capture the live workspace and optionally verify against a lockfile."""
+    """Capture the live workspace and optionally verify against a lockfile.
+
+    Declared live-observed fields (repository, workspace, …) are kept for
+    audit/drift but never passed as harness input to ``capture_environment``.
+    """
     declared = declared_config(declared)
+    harness = {
+        key: value for key, value in declared.items()
+        if key in HARNESS_KEYS
+    }
     observed = capture_environment(
-        root, harness=declared, env_allowlist=env_allowlist, environ=environ)
+        root, harness=harness, env_allowlist=env_allowlist, environ=environ)
     if expected is None and lockfile is None:
         return observed, None
     if expected is None:
         expected = load_lockfile(lockfile)
     rules = dict(policy) if policy is not None else dict(DEFAULT_VERIFY_POLICY)
-    result = verify_manifest(expected, observed, rules)
+    result = verify_manifest(expected, flatten_observed(observed), rules)
     return observed, result
 
 
@@ -98,19 +106,26 @@ def preflight_session_start(
 def capture_drift(declared: dict[str, Any],
                   observed: dict[str, Any]) -> list[dict[str, Any]]:
     """Declared manifest vs live capture recorded at session start."""
-    return diff_tree(declared_config(declared), observed)
+    return diff_tree(declared_config(declared), flatten_observed(observed))
 
 
 def effective_environment(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Workspace facts for readiness: prefer ``observed`` over declared lies."""
+    """Workspace facts for readiness: prefer live probe over declared lies."""
     config = declared_config(manifest.get("config", manifest))
     observed = manifest.get("observed")
     if not observed:
         return config
+    if (
+        isinstance(observed.get("live"), dict)
+        and set(observed) <= {"live", "harness"}
+    ):
+        probe = observed["live"]
+    else:
+        probe = observed  # flat legacy captures
     effective = dict(config)
-    for key in ("repository", "workspace", "runtime", "environment"):
-        if key in observed:
-            effective[key] = observed[key]
+    for key in LIVE_KEYS:
+        if key in probe:
+            effective[key] = probe[key]
     return effective
 
 
