@@ -562,6 +562,9 @@ def extract_decisions(semantic=None, include_user: bool = False,
             ctx.metric("audit.decisions", len(found))
             ctx.metric("audit.decisions.semantic",
                        sum(1 for f in found if f["source"] == "semantic"))
+        # Cumulative budget counters are shared across sessions — emit once
+        # after the loop. Recording inside would double-count via incr
+        # (baseline + baseline+candidate).
         ctx.metric("audit.decisions.chars", budget.chars)
         ctx.metric("audit.decisions.sentences", budget.sentences)
         ctx.metric("audit.decisions.recall_hits", budget.recall_hits)
@@ -587,7 +590,9 @@ class DecisionBudget:
         self.max_semantic = max_semantic
         self.chars = 0
         self.sentences = 0
+        # Sentences matching the recall regex (counted even if semantic is None).
         self.recall_hits = 0
+        # Sentences actually passed to the @semantic extractor.
         self.semantic_calls = 0
 
     def add_chars(self, n: int) -> None:
@@ -683,13 +688,15 @@ def _classify_message(text: str, line_no: int, semantic,
                                    match.group(0), (start, end), sentence,
                                    channel=channel))
                 break
-        if semantic is None:
-            continue
-        # Stage 2 only for recall-filter candidates — not every sentence.
+        # Recall filter is independent of @semantic: count hits even in
+        # markers-only mode. semantic_calls tracks actual extractor invokes.
         if not _SEMANTIC_RECALL_RE.search(sentence):
             continue
         if budget is not None:
             budget.recall_hits += 1
+        if semantic is None:
+            continue
+        if budget is not None:
             budget.add_semantic()
         verdict = semantic(sentence)
         if verdict:
@@ -1295,13 +1302,16 @@ def redact_secrets(checkpoint: str, value: Any, ctx: RunContext):
 
 
 def lineage_report(payload: Any) -> Any:
-    """Lineage extractor with scrub-at-capture (fills ``@lineage_extract``):
-    the ledger snapshots each step's output at step end — before run-end
-    policy egress can transform anything — so the audit trail must redact
-    what it records; middleware ordering alone cannot keep it clean."""
-    artifact = payload.get("report", payload) if isinstance(payload, dict) \
-        else payload
-    return _redact_value(artifact)[0]
+    """Lineage extractor with scrub-at-capture (fills ``@lineage_extract``).
+
+    Tracks only the final ``report`` string. Falling back to the whole payload
+    (sessions + tool_result bodies) makes LineageMiddleware run difflib on
+    multi‑hundred‑KB "lines" — ``SequenceMatcher.ratio`` is O(n²) and hangs
+    real Claude sessions for minutes. Until ``report`` exists, return empty.
+    """
+    if not isinstance(payload, dict) or "report" not in payload:
+        return ""
+    return _redact_value(payload["report"])[0]
 
 
 def _redact_value(value: Any) -> tuple[Any, int]:

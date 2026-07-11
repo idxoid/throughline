@@ -1,0 +1,139 @@
+{
+  "defaults": {
+    "max_chars": 200000,
+    "max_sentences": 4000,
+    "max_semantic": 400
+  },
+  "sessions": [
+    {
+      "name": "ce013a3b-ac2d-42b3-878e-6b723fefff99.jsonl",
+      "bytes": 2309464,
+      "events": 431
+    },
+    {
+      "name": "cfef387a-a458-4d69-8fb3-d8622a70ba3d.jsonl",
+      "bytes": 1642548,
+      "events": 283
+    },
+    {
+      "name": "c5b7fb95-8fcc-4f7e-aec3-37c95a268004.jsonl",
+      "bytes": 1349574,
+      "events": 189
+    },
+    {
+      "name": "3ee2041a-2f89-40e0-9731-bb3f8131f969.jsonl",
+      "bytes": 1030591,
+      "events": 173
+    },
+    {
+      "name": "c44d64a3-5b91-414e-85ce-42b03aa0639e.jsonl",
+      "bytes": 383807,
+      "events": 68
+    },
+    {
+      "name": "c262713d-03d1-4695-a53f-01467d860fa7.jsonl",
+      "bytes": 164858,
+      "events": 29
+    }
+  ],
+  "runs": [
+    {
+      "label": "pair_largest: ce013a3b vs cfef387a",
+      "status": "ok",
+      "error": null,
+      "duration_s": 0.0417,
+      "decisions": 10,
+      "chars": 125223.0,
+      "sentences": 1547.0,
+      "recall_hits": 18.0,
+      "semantic_calls": 18.0,
+      "vs_chars": "125223.0/200000 (62.6%)",
+      "vs_sentences": "1547.0/4000 (38.7%)",
+      "vs_semantic": "18.0/400 (4.5%)"
+    },
+    {
+      "label": "solo+fixture: ce013a3b",
+      "status": "ok",
+      "error": null,
+      "duration_s": 0.0291,
+      "decisions": 4,
+      "chars": 86465.0,
+      "sentences": 1111.0,
+      "recall_hits": 6.0,
+      "semantic_calls": 6.0,
+      "vs_chars": "86465.0/200000 (43.2%)",
+      "vs_sentences": "1111.0/4000 (27.8%)",
+      "vs_semantic": "6.0/400 (1.5%)"
+    },
+    {
+      "label": "solo+fixture: cfef387a",
+      "status": "ok",
+      "error": null,
+      "duration_s": 0.0134,
+      "decisions": 8,
+      "chars": 39182.0,
+      "sentences": 444.0,
+      "recall_hits": 14.0,
+      "semantic_calls": 14.0,
+      "vs_chars": "39182.0/200000 (19.6%)",
+      "vs_sentences": "444.0/4000 (11.1%)",
+      "vs_semantic": "14.0/400 (3.5%)"
+    },
+    {
+      "label": "solo+fixture: c5b7fb95",
+      "status": "ok",
+      "error": null,
+      "duration_s": 0.0068,
+      "decisions": 1,
+      "chars": 21094.0,
+      "sentences": 330.0,
+      "recall_hits": 1.0,
+      "semantic_calls": 1.0,
+      "vs_chars": "21094.0/200000 (10.5%)",
+      "vs_sentences": "330.0/4000 (8.2%)",
+      "vs_semantic": "1.0/400 (0.2%)"
+    },
+    {
+      "label": "solo+fixture: 3ee2041a",
+      "status": "ok",
+      "error": null,
+      "duration_s": 0.0106,
+      "decisions": 3,
+      "chars": 29520.0,
+      "sentences": 370.0,
+      "recall_hits": 3.0,
+      "semantic_calls": 3.0,
+      "vs_chars": "29520.0/200000 (14.8%)",
+      "vs_sentences": "370.0/4000 (9.2%)",
+      "vs_semantic": "3.0/400 (0.8%)"
+    },
+    {
+      "label": "solo+fixture: c44d64a3",
+      "status": "ok",
+      "error": null,
+      "duration_s": 0.0023,
+      "decisions": 10,
+      "chars": 7259.0,
+      "sentences": 103.0,
+      "recall_hits": 4.0,
+      "semantic_calls": 4.0,
+      "vs_chars": "7259.0/200000 (3.6%)",
+      "vs_sentences": "103.0/4000 (2.6%)",
+      "vs_semantic": "4.0/400 (1.0%)"
+    },
+    {
+      "label": "solo+fixture: c262713d",
+      "status": "ok",
+      "error": null,
+      "duration_s": 0.0021,
+      "decisions": 1,
+      "chars": 6600.0,
+      "sentences": 79.0,
+      "recall_hits": 1.0,
+      "semantic_calls": 1.0,
+      "vs_chars": "6600.0/200000 (3.3%)",
+      "vs_sentences": "79.0/4000 (2.0%)",
+      "vs_semantic": "1.0/400 (0.2%)"
+    }
+  ]
+}

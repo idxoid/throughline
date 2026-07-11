@@ -666,6 +666,58 @@ class PresetTests(unittest.TestCase):
                               max_semantic=3)(long, RunContext())
         self.assertIn("max_semantic=3", str(caught.exception))
 
+    def test_example_agent_audit_decision_budget_metrics_not_doubled(self):
+        """Shared DecisionBudget counters must be emitted once, not per session."""
+        from examples.agent_audit import extract_decisions, heuristic_semantics
+        from throughline.context import RunContext
+        from throughline.modules.metrics import Metrics
+
+        # Two asymmetric sessions so baseline+candidate ≠ 2*baseline.
+        baseline_text = "I'll switch plans because the first approach failed."
+        candidate_text = "I'll fix it."
+        payload = {
+            "sessions": {
+                "baseline": [{"type": "assistant", "text": baseline_text}],
+                "candidate": [{"type": "assistant", "text": candidate_text}],
+            },
+        }
+        ctx = RunContext()
+        ctx.artifacts["metrics"] = Metrics()
+        out = extract_decisions(semantic=heuristic_semantics)(payload, ctx)
+        counters = ctx.artifacts["metrics"].snapshot()["counters"]
+
+        # Per-session decision counts still accumulate via incr (correct).
+        self.assertEqual(
+            len(out["decisions"]["baseline"]) + len(out["decisions"]["candidate"]),
+            counters["audit.decisions"],
+        )
+
+        expected_chars = len(baseline_text) + len(candidate_text)
+        expected_sentences = 2  # one sentence each
+        # Both sentences hit recall (I'll / switch|plans|because|approach / I'll|fix).
+        expected_recall = 2
+        expected_semantic_calls = 2
+
+        self.assertEqual(counters["audit.decisions.chars"], expected_chars)
+        self.assertEqual(counters["audit.decisions.sentences"], expected_sentences)
+        self.assertEqual(counters["audit.decisions.recall_hits"], expected_recall)
+        self.assertEqual(counters["audit.decisions.semantic_calls"],
+                         expected_semantic_calls)
+        # Guard against the double-count shape: baseline + (baseline+candidate).
+        self.assertNotEqual(counters["audit.decisions.chars"],
+                            len(baseline_text) + expected_chars)
+        self.assertNotEqual(counters["audit.decisions.sentences"],
+                            1 + expected_sentences)
+
+        # Markers-only: recall_hits still count filter matches; semantic_calls=0.
+        ctx_markers = RunContext()
+        ctx_markers.artifacts["metrics"] = Metrics()
+        extract_decisions(semantic=None)(payload, ctx_markers)
+        markers_only = ctx_markers.artifacts["metrics"].snapshot()["counters"]
+        self.assertEqual(markers_only["audit.decisions.recall_hits"],
+                         expected_recall)
+        self.assertEqual(markers_only["audit.decisions.semantic_calls"], 0)
+
     def test_example_agent_audit_decision_event_policy(self):
         """tool_result is skipped unless opt-in; tool_call keeps intent only."""
         from examples.agent_audit import (
