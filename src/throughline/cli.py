@@ -240,16 +240,16 @@ def _cmd_lockfile_verify(args: argparse.Namespace) -> int:
 
 
 def _cmd_transcript_convert(args: argparse.Namespace) -> int:
-    from .adapters.transcripts import convert_file, detect_format, read_jsonl
+    from .adapters.transcripts import (convert_events, detect_format,
+                                       read_jsonl, write_jsonl)
 
-    raw = read_jsonl(args.input)
+    path = Path(args.input)
+    raw = read_jsonl(path)          # read once; detect + convert share it
     detected = detect_format(raw)
-    events = convert_file(
-        args.input,
-        args.out,
-        format=args.format,
-        session_id=args.session_id,
-    )
+    session_id = args.session_id or (path.stem or None)
+    events = convert_events(raw, format=args.format, session_id=session_id)
+    if args.out:
+        write_jsonl(args.out, events)
     if args.json:
         print(json.dumps({
             "format": args.format if args.format != "auto" else detected,
