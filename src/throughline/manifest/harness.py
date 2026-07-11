@@ -67,6 +67,12 @@ def _claude_code_config(root: Path, home: Path) -> dict[str, Any]:
     project = _load_json(root / ".claude" / "settings.json")
     merged = {**settings, **project, **local}
 
+    # Claude Code chooses the model at runtime and usually omits it from
+    # settings.json, so model.id is frequently absent here (unlike Codex's
+    # config.toml). When it matters, the session transcript's assistant rows
+    # carry the effective model — see adapters/transcripts/claude_code.py.
+    # Sampling params (temperature/top_p/max_tokens) are not persisted by any
+    # harness and are never captured; pin them by hand in the lockfile.
     model_raw = merged.get("model") or ""
     model_id = str(model_raw).split("[", 1)[0] if model_raw else None
     config: dict[str, Any] = {

@@ -727,6 +727,18 @@ PYTHONPATH=src python3 -m throughline transcript convert \
   -i ~/.claude/projects/.../session.jsonl -o session.neutral.jsonl
 ```
 
+**Model/sampling capture is harness-limited.** `lockfile capture` reads only
+what a harness persists on disk. Sampling params (temperature, top-p,
+max-tokens) are runtime-chosen by every harness and are stored nowhere, so
+they never enter a captured lockfile — add them by hand if you pin them.
+`model.id` is captured for Codex (`config.toml`) and Cursor, but Claude Code
+selects the model at runtime and usually omits it from `settings.json`; there
+the strongest model-swap signal comes from the **session transcript** (the
+`assistant` row's `model`, which `transcript convert` does record), not from
+`lockfile capture`. Consequence: `lockfile verify` catches a Claude model swap
+only when the lockfile actually declares `model.id` (from settings or authored
+by hand) — an unattested field is treated as "not pinned", never as a pass.
+
 Stack order for live gates: **Observe/Metrics → ManifestGate → Policy → Cache**.
 Flow construction rejects Cache before ManifestGate/Policy (cache hits would
 skip verification). See `examples/presets/agent-preflight.toml` and
