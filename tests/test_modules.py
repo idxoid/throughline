@@ -57,6 +57,26 @@ class ObserveTests(unittest.TestCase):
         tl.Flow([str.strip], middleware=[Observe(sink)]).run(" x ")
         self.assertTrue(any(e["type"] == "step_finished" for e in sink.events))
 
+    def test_null_sink_shortcut(self):
+        from throughline.modules.observe import NullSink
+        self.assertIsInstance(Observe._coerce("null"), NullSink)
+        self.assertIsInstance(Observe._coerce("none"), NullSink)
+        # Memory bus still records; null is a no-op extra sink.
+        result = tl.Flow([str.strip], middleware=[Observe(sink="null")]).run(" x ")
+        self.assertTrue(any(e["type"] == "step_finished" for e in result.events))
+
+    def test_console_sink_truncates_large_values(self):
+        import io
+        from throughline.modules.observe import ConsoleSink
+        buf = io.StringIO()
+        sink = ConsoleSink(stream=buf, verbose=True, max_value_chars=20)
+        sink({"ts": 0.0, "type": "diag", "run_id": "r", "flow": "f",
+              "blob": "x" * 200})
+        line = buf.getvalue()
+        self.assertIn("blob=", line)
+        self.assertIn("…", line)
+        self.assertNotIn("x" * 50, line)
+
     def test_jsonl_sink(self):
         import json
         import tempfile
@@ -67,6 +87,21 @@ class ObserveTests(unittest.TestCase):
             lines = path.read_text().strip().splitlines()
             self.assertTrue(lines)
             self.assertIn("type", json.loads(lines[0]))
+
+    def test_jsonl_sink_truncates_large_values(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from throughline.modules.observe import JsonlSink
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            sink = JsonlSink(path, max_value_chars=30)
+            sink({"ts": 1.0, "type": "diag", "blob": "y" * 500,
+                  "nested": {"note": "z" * 500}})
+            row = json.loads(path.read_text().strip())
+            self.assertLessEqual(len(row["blob"]), 30)
+            self.assertTrue(row["blob"].endswith("…"))
+            self.assertLessEqual(len(row["nested"]["note"]), 30)
 
 
 class ValidateTests(unittest.TestCase):

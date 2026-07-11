@@ -1,7 +1,7 @@
 """Pluggable modules: each one is a Middleware you can mix into any Flow."""
 
 from .metrics import Metrics, MetricsMiddleware
-from .observe import ConsoleSink, JsonlSink, MemorySink, Observe
+from .observe import ConsoleSink, JsonlSink, MemorySink, NullSink, Observe
 from .validate import Validate
 from .lineage import LineageLedger, LineageMiddleware
 from .retry import Retry
@@ -17,7 +17,7 @@ from .structured import json_step, parse_json, structured_step
 
 __all__ = [
     "Metrics", "MetricsMiddleware",
-    "Observe", "ConsoleSink", "JsonlSink", "MemorySink",
+    "Observe", "ConsoleSink", "JsonlSink", "MemorySink", "NullSink",
     "Validate",
     "LineageLedger", "LineageMiddleware",
     "Retry",

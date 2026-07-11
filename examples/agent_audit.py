@@ -6,8 +6,14 @@ reasons. This preset audits two recorded agent sessions and answers with
 data instead of vibes:
 
     normalize -> load sessions -> build manifests -> assess outcomes
-              -> extract traces -> assess readiness -> extract decisions
-              -> diff runs -> render report
+              -> extract traces -> extract decisions -> drop raw sessions
+              -> assess readiness -> diff runs -> render report
+
+Raw ``sessions`` stay in the payload only while derived views are built
+(manifests / outcomes / traces / decisions). ``drop_raw_sessions`` then
+keeps path keys only so later steps, policy egress, and lineage never walk
+tool_result bodies. ``render_report`` already omits sessions from the
+public JSON.
 
 Three layers, deliberately separate:
 
@@ -571,6 +577,20 @@ def extract_decisions(semantic=None, include_user: bool = False,
         ctx.metric("audit.decisions.semantic_calls", budget.semantic_calls)
         return {**payload, "decisions": decisions}
     return step
+
+
+def drop_raw_sessions(payload, ctx: RunContext) -> dict:
+    """Drop raw session bodies once derived views exist; keep paths only.
+
+    Manifests, outcomes, traces, and decisions already summarize what audit
+    needs. Leaving full transcripts in the payload forces policy/redact and
+    any payload-walking middleware to traverse every tool_result.
+    """
+    if "sessions" not in payload:
+        return payload
+    out = {key: value for key, value in payload.items() if key != "sessions"}
+    ctx.metric("audit.sessions_dropped", 1)
+    return out
 
 
 class DecisionBudgetExceeded(ValueError):

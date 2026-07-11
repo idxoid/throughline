@@ -52,10 +52,7 @@ name = "outcomes"
 uses = "examples.agent_audit:extract_traces"
 name = "traces"
 
-[[steps]]
-uses = "examples.agent_audit:assess_readiness"
-name = "readiness"
-
+# Decisions still need raw sessions; run them before drop_raw_sessions.
 [[steps]]
 uses = "examples.agent_audit:extract_decisions"
 name = "decisions"
@@ -67,6 +64,16 @@ semantic = "@semantic"
 # max_chars = 200000
 # max_sentences = 4000
 # max_semantic = 400
+
+# Derived views are enough from here on — drop tool_result bodies so
+# readiness/diff/report/policy never walk raw transcripts.
+[[steps]]
+uses = "examples.agent_audit:drop_raw_sessions"
+name = "drop_sessions"
+
+[[steps]]
+uses = "examples.agent_audit:assess_readiness"
+name = "readiness"
 
 [[steps]]
 uses = "examples.agent_audit:diff_runs"
@@ -81,7 +88,12 @@ name = "report"
 # schema validation sees the redacted output. Lineage sits outside Policy so
 # its run-end sweep can re-attribute the egress redaction; @lineage_extract
 # additionally scrubs at capture so no ledger record ever holds the secret.
+#
+# Observe: memory bus only (sink=null). Console/jsonl truncate large event
+# fields, but audit still avoids attaching them — payloads are huge and the
+# event bus never carries step payloads anyway.
 [middleware.observe]
+sink = "null"
 
 [middleware.metrics]
 

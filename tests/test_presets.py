@@ -226,6 +226,11 @@ class PresetTests(unittest.TestCase):
         flow = load_preset("examples/presets/agent-audit.toml")
         result = flow.run({})
         self.assertEqual(result.output["readiness_gate"], "block")
+        # Public JSON must never carry raw session transcripts (tool_result
+        # bodies). Paths stay on intermediate payloads; render_report omits
+        # both sessions and path keys from the final public surface.
+        self.assertNotIn("sessions", result.output)
+        self.assertEqual(result.metrics["counters"].get("audit.sessions_dropped"), 1)
         self.assertTrue(result.output["readiness"]["baseline"]["can_start"])
         self.assertFalse(result.output["readiness"]["candidate"]["can_start"])
         cand_blockers = {b["id"] for b in
@@ -813,6 +818,32 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(
             [(d["class"], d["channel"]) for d in out_opt["decisions"]["baseline"]],
             [("decision", "tool_result")])
+
+    def test_example_agent_audit_drop_raw_sessions(self):
+        """After derived views exist, raw transcripts leave the payload."""
+        from examples.agent_audit import drop_raw_sessions
+        from throughline.context import RunContext
+        from throughline.modules import Metrics
+
+        payload = {
+            "baseline_path": "/tmp/a.jsonl",
+            "candidate_path": "/tmp/b.jsonl",
+            "sessions": {"baseline": [{"type": "tool_result", "result": "huge"}],
+                         "candidate": []},
+            "traces": {"baseline": [], "candidate": []},
+            "decisions": {"baseline": [], "candidate": []},
+        }
+        ctx = RunContext()
+        ctx.artifacts["metrics"] = Metrics()
+        out = drop_raw_sessions(payload, ctx)
+        self.assertNotIn("sessions", out)
+        self.assertEqual(out["baseline_path"], "/tmp/a.jsonl")
+        self.assertEqual(out["traces"], payload["traces"])
+        self.assertEqual(ctx.artifacts["metrics"].snapshot()["counters"]
+                         ["audit.sessions_dropped"], 1)
+        # Idempotent when already dropped.
+        again = drop_raw_sessions(out, RunContext())
+        self.assertEqual(again, out)
 
     def test_example_agent_audit_result_normalizers(self):
         """Pytest timing noise must not masquerade as behavioral divergence."""
