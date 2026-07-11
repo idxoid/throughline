@@ -53,6 +53,22 @@ class ManifestSessionTests(unittest.TestCase):
         self.assertEqual(start["type"], "session_start")
         self.assertIn("observed", start["config"])
 
+    def test_session_recorder_can_capture_without_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            recorder = SessionRecorder(path)
+            result = recorder.start(
+                "capture-only",
+                {"model": {"id": "test-model"}},
+                root=tmp,
+            )
+            self.assertIsNone(result)
+            start = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        self.assertIn("observed", start["config"])
+        self.assertNotIn("verify", start["config"])
+        self.assertEqual(start["config"]["model"]["id"], "test-model")
+        self.assertIn("live", start["config"]["observed"])
+
     def test_session_start_drops_secrets_from_declared(self):
         dirty = json.loads(json.dumps(_HARNESS))
         dirty["api_key"] = "sk-live-secret123"
