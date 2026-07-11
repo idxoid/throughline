@@ -27,3 +27,21 @@ jobs:
         run: |
           python -m throughline run demo --input "ci smoke" --blame --metrics
           python -m throughline doctor demo
+      - name: Agent lockfile verify
+        run: |
+          python -m throughline lockfile verify \
+            -l examples/data/agent.lock.json \
+            --config examples/data/agent.lock.json \
+            --root . \
+            --json
+      - name: Agent preflight preset
+        env:
+          THROUGHLINE_PRESETS: examples/presets
+        run: |
+          python -m throughline run agent-preflight --json-input \
+            -i "{\"harness_config\": $(cat examples/data/agent.lock.json)}" --json
+      - name: Transcript convert smoke
+        run: |
+          python -m throughline transcript convert \
+            -i tests/data/transcripts/codex_sample.jsonl \
+            -o /tmp/codex.neutral.jsonl --json

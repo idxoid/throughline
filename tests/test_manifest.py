@@ -6,7 +6,7 @@ from pathlib import Path
 from throughline.manifest import (DEFAULT_VERIFY_POLICY, SOURCE_HARNESS,
                                     SOURCE_LIVE_PROBE, capture_environment,
                                     env_hash, flatten_observed, observed_sources,
-                                    verify_manifest)
+                                    short_digest, verify_manifest)
 from throughline.manifest.capture import git_snapshot, workspace_merkle_root
 from throughline.manifest.verify import load_lockfile, policy_action
 
@@ -101,9 +101,11 @@ class ManifestVerifyTests(unittest.TestCase):
 
 
 class ManifestCaptureTests(unittest.TestCase):
-    def test_env_hash_is_stable_and_short(self):
-        self.assertEqual(len(env_hash("secret-value")), 8)
+    def test_env_hash_is_full_sha256(self):
+        digest = env_hash("secret-value")
+        self.assertEqual(len(digest), 64)
         self.assertEqual(env_hash("x"), env_hash("x"))
+        self.assertEqual(short_digest(digest), digest[:8])
 
     def test_capture_separates_live_and_harness_provenance(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -196,7 +198,16 @@ class ManifestCaptureTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[1]
         snap = git_snapshot(repo_root)
         self.assertIsNotNone(snap["commit"])
+        self.assertEqual(len(snap["commit"]), 40)
         self.assertIsInstance(snap["dirty"], bool)
+
+    def test_workspace_merkle_uses_full_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.py").write_text("one", encoding="utf-8")
+            digest = workspace_merkle_root(root)
+        self.assertTrue(digest.startswith("m-"))
+        self.assertEqual(len(digest), 2 + 64)
 
     def test_load_lockfile_json_and_toml(self):
         with tempfile.TemporaryDirectory() as tmp:

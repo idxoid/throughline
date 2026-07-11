@@ -53,6 +53,25 @@ class ManifestSessionTests(unittest.TestCase):
         self.assertEqual(start["type"], "session_start")
         self.assertIn("observed", start["config"])
 
+    def test_session_start_drops_secrets_from_declared(self):
+        dirty = json.loads(json.dumps(_HARNESS))
+        dirty["api_key"] = "sk-live-secret123"
+        dirty["authorization"] = "Bearer abcdefghi12345"
+        dirty["model"]["api_key"] = "nested-secret"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            recorder = SessionRecorder(path)
+            recorder.start("s-secret", dirty, root=tmp, lockfile=str(_LOCK))
+            raw = path.read_text(encoding="utf-8")
+        self.assertNotIn("sk-live-secret123", raw)
+        self.assertNotIn("Bearer abcdefghi12345", raw)
+        self.assertNotIn("nested-secret", raw)
+        start = json.loads(raw.splitlines()[0])
+        self.assertNotIn("api_key", start["config"])
+        self.assertNotIn("authorization", start["config"])
+        self.assertEqual(start["config"]["model"]["api_key"], "[redacted]")
+        self.assertEqual(start["config"]["model"]["id"], _HARNESS["model"]["id"])
+
     def test_capture_drift_detects_declared_vs_observed(self):
         declared = {"repository": {"dirty": False, "commit": "abc"}}
         observed = {"repository": {"dirty": True, "commit": "abc"}}

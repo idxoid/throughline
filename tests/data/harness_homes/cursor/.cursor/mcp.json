@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "demo": {
+      "command": "mcp-demo",
+      "args": [],
+      "env": {"TOKEN": "secret-value"}
+    }
+  }
+}

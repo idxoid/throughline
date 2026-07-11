@@ -6,6 +6,9 @@
     throughline steps
     throughline components            # typed catalog (kind, source, plugins)
     throughline doctor rag-qa         # resolve every slot without running
+    throughline lockfile capture -o agent.lock.json
+    throughline lockfile verify -l agent.lock.json
+    throughline transcript convert -i session.jsonl -o neutral.jsonl
     throughline mcp --preset rag-qa   # [contrib] expose flows as MCP tools (stdio)
 """
 
@@ -14,6 +17,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import asdict
+from pathlib import Path
 
 from . import __version__
 from .errors import ThroughlineError
@@ -172,6 +177,95 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_lockfile_capture(args: argparse.Namespace) -> int:
+    from .manifest import capture_lockfile
+
+    declared = None
+    if args.config:
+        declared = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    config = capture_lockfile(
+        args.out,
+        root=args.root,
+        harness=args.harness,
+        declared=declared,
+    )
+    if args.json:
+        print(json.dumps(config, indent=2, ensure_ascii=False))
+    else:
+        print(f"wrote {args.out}", file=sys.stderr)
+        print(json.dumps(config, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_lockfile_update(args: argparse.Namespace) -> int:
+    from .manifest import update_lockfile
+
+    config = update_lockfile(args.lockfile, root=args.root, harness=args.harness)
+    print(f"updated {args.lockfile}", file=sys.stderr)
+    if args.json:
+        print(json.dumps(config, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_lockfile_verify(args: argparse.Namespace) -> int:
+    from .manifest import redact_secrets, verify_lockfile
+
+    declared = None
+    if args.config:
+        declared = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    observed, result = verify_lockfile(
+        args.lockfile,
+        root=args.root,
+        harness=None if args.config else args.harness,
+        declared=declared,
+        env_allowlist=args.env or [],
+    )
+    report = redact_secrets({
+        "gate": result.gate,
+        "violations": [asdict(v) for v in result.violations],
+        "observed": observed,
+    })
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        print(f"gate: {result.gate}")
+        for item in report["violations"]:
+            print(f"  [{item['action']}] {item['field']}: "
+                  f"expected {item['expected']!r} -> observed {item['observed']!r}")
+        if not report["violations"]:
+            print("  (no violations)")
+    if result.gate == "block":
+        return 1
+    return 0
+
+
+def _cmd_transcript_convert(args: argparse.Namespace) -> int:
+    from .adapters.transcripts import convert_file, detect_format, read_jsonl
+
+    raw = read_jsonl(args.input)
+    detected = detect_format(raw)
+    events = convert_file(
+        args.input,
+        args.out,
+        format=args.format,
+        session_id=args.session_id,
+    )
+    if args.json:
+        print(json.dumps({
+            "format": args.format if args.format != "auto" else detected,
+            "events": len(events),
+            "types": sorted({e.get("type") for e in events}),
+        }, indent=2))
+    else:
+        dest = args.out or "(stdout skipped; pass --out)"
+        print(f"format={detected if args.format == 'auto' else args.format} "
+              f"events={len(events)} -> {dest}", file=sys.stderr)
+        if not args.out:
+            for event in events:
+                print(json.dumps(event, ensure_ascii=False))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="throughline",
@@ -211,6 +305,55 @@ def main(argv: list[str] | None = None) -> int:
     doctor.add_argument("--fill", action="append", metavar="NAME=REF",
                         help="fill a declared preset slot (repeatable)")
     doctor.set_defaults(func=_cmd_doctor)
+
+    lockfile = commands.add_parser(
+        "lockfile", help="capture / update / verify agent environment lockfiles")
+    lock_sub = lockfile.add_subparsers(dest="lockfile_command", required=True)
+
+    capture = lock_sub.add_parser(
+        "capture", help="write harness-attested config from Claude/Cursor/Codex")
+    capture.add_argument("--out", "-o", required=True, help="output lockfile path")
+    capture.add_argument("--root", default=".", help="workspace root")
+    capture.add_argument("--harness", default="auto",
+                         choices=["auto", "claude-code", "cursor", "codex"],
+                         help="which harness config to read")
+    capture.add_argument("--config", help="use this declared JSON instead of probing")
+    capture.add_argument("--json", action="store_true", help="print captured config")
+    capture.set_defaults(func=_cmd_lockfile_capture)
+
+    update = lock_sub.add_parser(
+        "update", help="refresh harness fields in an existing lockfile")
+    update.add_argument("--lockfile", "-l", required=True, help="lockfile to update")
+    update.add_argument("--root", default=".", help="workspace root")
+    update.add_argument("--harness", default="auto",
+                        choices=["auto", "claude-code", "cursor", "codex"])
+    update.add_argument("--json", action="store_true")
+    update.set_defaults(func=_cmd_lockfile_update)
+
+    verify = lock_sub.add_parser(
+        "verify", help="live-capture + verify against a lockfile")
+    verify.add_argument("--lockfile", "-l", required=True, help="expected lockfile")
+    verify.add_argument("--root", default=".", help="workspace root")
+    verify.add_argument("--harness", default="auto",
+                        choices=["auto", "claude-code", "cursor", "codex"],
+                        help="source of observed harness attestation")
+    verify.add_argument("--config", help="declared harness JSON (skips harness probe)")
+    verify.add_argument("--env", action="append", default=[],
+                        help="env var name to hash (repeatable)")
+    verify.add_argument("--json", action="store_true")
+    verify.set_defaults(func=_cmd_lockfile_verify)
+
+    transcript = commands.add_parser(
+        "transcript", help="convert Claude Code / Cursor / Codex logs to neutral JSONL")
+    tr_sub = transcript.add_subparsers(dest="transcript_command", required=True)
+    convert = tr_sub.add_parser("convert", help="normalize a harness transcript")
+    convert.add_argument("--input", "-i", required=True, help="source JSONL")
+    convert.add_argument("--out", "-o", help="destination neutral JSONL")
+    convert.add_argument("--format", default="auto",
+                         choices=["auto", "claude-code", "cursor", "codex", "neutral"])
+    convert.add_argument("--session-id", help="override session id when missing")
+    convert.add_argument("--json", action="store_true", help="summary only")
+    convert.set_defaults(func=_cmd_transcript_convert)
 
     mcp = commands.add_parser(
         "mcp", help="[optional, contrib] serve presets as MCP tools over stdio")

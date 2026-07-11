@@ -2,20 +2,10 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from throughline.context import RunContext
-
-_SECRET_KEY_RE = re.compile(
-    r"(secret|api[_-]?key|password|credential|authorization|"
-    r"access[_-]?token|refresh[_-]?token|session[_-]?token|bearer)",
-    re.IGNORECASE,
-)
-_SECRET_VALUE_RE = re.compile(
-    r"\b(?:sk|key|token)-[A-Za-z0-9._-]{6,}\b|Bearer\s+[A-Za-z0-9._-]{8,}",
-    re.IGNORECASE,
-)
+from throughline.manifest.sanitize import redact_secrets
 
 
 def render_report(payload, ctx: RunContext) -> dict[str, Any]:
@@ -23,7 +13,7 @@ def render_report(payload, ctx: RunContext) -> dict[str, Any]:
     manifest = ctx.artifacts.get("manifest")
     if manifest is None:
         raise RuntimeError("manifest artifact missing — is ManifestGate enabled?")
-    public = _scrub(manifest)
+    public = redact_secrets(manifest)
 
     lines = [
         "# Agent preflight",
@@ -63,19 +53,6 @@ def render_report(payload, ctx: RunContext) -> dict[str, Any]:
         "expected": public.get("expected"),
         "report": "\n".join(lines),
     }
-
-
-def _scrub(value: Any, key: str = "") -> Any:
-    if _SECRET_KEY_RE.search(key):
-        return "[redacted]"
-    if isinstance(value, dict):
-        return {item_key: _scrub(item_value, str(item_key))
-                for item_key, item_value in value.items()}
-    if isinstance(value, list):
-        return [_scrub(item) for item in value]
-    if isinstance(value, str):
-        return _SECRET_VALUE_RE.sub("[redacted]", value)
-    return value
 
 
 def _compact(value: Any, limit: int = 64) -> str:

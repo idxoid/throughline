@@ -1,0 +1,10 @@
+{
+  "model": "claude-test-model",
+  "effortLevel": "medium",
+  "mcpServers": {
+    "git": {
+      "command": "mcp-git",
+      "args": ["--stdio"]
+    }
+  }
+}

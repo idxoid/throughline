@@ -12,6 +12,7 @@ from typing import Any, Literal
 from ..errors import ManifestVerifyError
 from .capture import HARNESS_KEYS, LIVE_KEYS, capture_environment, flatten_observed
 from .diff import diff_tree
+from .sanitize import redact_secrets, sanitize_for_audit
 from .verify import (DEFAULT_VERIFY_POLICY, VerifyResult, load_lockfile,
                      verify_manifest)
 
@@ -80,18 +81,22 @@ def preflight_session_start(
     Harnesses call this before the first tool call. When ``on_block='raise'``
     and verify returns ``block``, raises ``ManifestVerifyError`` and the
     session must not start.
+
+    The returned config is **audit-safe**: only allowlisted manifest keys are
+    kept, and secret-shaped nested fields are redacted. Raw declared secrets
+    (``api_key``, ``authorization``, …) are never serialized.
     """
     declared = declared_config(declared)
     observed, result = verify_live(
         declared, root=root, env_allowlist=env_allowlist, environ=environ,
         lockfile=lockfile, expected=expected, policy=policy)
-    config = dict(declared)
-    config["observed"] = observed
+    config = sanitize_for_audit(declared)
+    config["observed"] = redact_secrets(observed)
     if result is not None:
-        config["verify"] = {
+        config["verify"] = redact_secrets({
             "gate": result.gate,
             "violations": [asdict(v) for v in result.violations],
-        }
+        })
         if result.gate == "block" and on_block == "raise":
             summary = "; ".join(
                 f"{v.field} ({v.action})" for v in result.violations[:5])

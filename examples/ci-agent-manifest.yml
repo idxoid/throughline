@@ -1,0 +1,37 @@
+# Example: block merges when the agent lockfile drifts from harness config
+# or the live workspace violates policy (dirty tree, merkle mismatch, …).
+#
+# Copy into a consumer repo and point --config at the harness-exported
+# effective config (or use --harness claude-code|cursor|codex).
+
+name: agent-manifest
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify agent lockfile
+        run: |
+          python -m throughline lockfile verify \
+            -l agent.lock.json \
+            --config agent.lock.json \
+            --root . \
+            --json
+      - name: Preflight gate (optional preset)
+        if: hashFiles('examples/presets/agent-preflight.toml') != ''
+        env:
+          THROUGHLINE_PRESETS: examples/presets
+        run: |
+          python -m throughline run agent-preflight --json-input \
+            -i "{\"harness_config\": $(cat agent.lock.json)}" --json

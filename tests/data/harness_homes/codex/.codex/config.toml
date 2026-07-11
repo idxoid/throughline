@@ -1,0 +1,6 @@
+model = "gpt-test"
+model_reasoning_effort = "high"
+
+[mcp_servers.demo]
+command = "mcp-demo"
+args = ["--flag"]

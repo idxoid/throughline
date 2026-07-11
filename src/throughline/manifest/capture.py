@@ -44,7 +44,16 @@ SOURCE_HARNESS = "harness"
 
 
 def env_hash(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    """Full SHA-256 hex digest of an env value (never store the raw value)."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def short_digest(digest: str, length: int = 8) -> str:
+    """Truncate a hex digest (or ``m-…`` merkle) for display only."""
+    if digest.startswith("m-"):
+        body = digest[2:]
+        return f"m-{body[:length]}"
+    return digest[:length]
 
 
 def git_snapshot(root: Path) -> dict[str, Any]:
@@ -61,11 +70,11 @@ def git_snapshot(root: Path) -> dict[str, Any]:
     if run("rev-parse").returncode != 0:
         return {"commit": None, "branch": None, "dirty": True}
 
-    commit = run("rev-parse", "HEAD").stdout.strip()
+    commit = run("rev-parse", "HEAD").stdout.strip() or None
     branch = run("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     dirty = bool(run("status", "--porcelain").stdout.strip())
     return {
-        "commit": commit[:8] if commit else None,
+        "commit": commit,  # full SHA for policy enforcement
         "branch": branch or None,
         "dirty": dirty,
     }
@@ -113,9 +122,9 @@ def _hash_files(root: Path, paths: Iterable[Path]) -> str:
         rel = path.relative_to(root)
         if any(part in _SKIP_DIRS for part in rel.parts):
             continue
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
         parts.append(f"{rel.as_posix()}:{digest}")
-    combined = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:12]
+    combined = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
     return f"m-{combined}"
 
 

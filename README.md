@@ -115,6 +115,7 @@ These examples are the fastest way to see what the control plane is for:
 | `data-qa` | Data quality assistant | deterministic checks, step validation, strict report schema |
 | `doc-extract` | Document extraction pipeline | parser slot, page map, retryable structured extraction |
 | `support-agent` | Guarded support bot | intent routing, policy screening/redaction, quota fallback, audit |
+| `agent-preflight` | Live agent environment gate | ManifestGate, harness-attested config vs lockfile, live workspace probe |
 | `agent-audit` | AI-agent workflow reproducibility | run manifests ("lockfile"), config drift diff, tool-call trace alignment (call_id-paired, exact/inferred quality, first behavioral divergence), symmetric multidimensional outcome diff (change + regression/improvement assessment), two-stage classed decision extraction (markers, then optional @semantic slot) with evidence spans, recursive secret redaction (public output + blame trail) |
 | `surgical_context` | Code intelligence / change impact | file:line citations, code QA, real integration |
 
@@ -699,6 +700,37 @@ tracing). Raise `tl.EarlyReturn(output)` anywhere to finish the run early;
 its exact semantics (what is skipped, what still runs, `ctx.short_circuited`)
 are a formal contract — see ARCHITECTURE and `tests/test_early_return.py`.
 First middleware in the list is the outermost layer.
+
+## Agent lockfiles & harness transcripts
+
+Throughline can gate agent runs on a **lockfile** of harness-attested config
+(model, prompts, MCP, tools) plus a **live probe** of the workspace
+(repository / merkle / runtime). Guarantee wording:
+
+> Throughline verified the workspace directly and verified harness-attested
+> agent configuration.
+
+```bash
+# Capture effective Claude Code / Cursor / Codex config into a lockfile
+PYTHONPATH=src python3 -m throughline lockfile capture \
+  --harness auto -o agent.lock.json --root .
+
+# Refresh after changing MCP servers or model settings
+PYTHONPATH=src python3 -m throughline lockfile update -l agent.lock.json
+
+# Live verify (exit 1 on gate=block) — use in CI before agent jobs
+PYTHONPATH=src python3 -m throughline lockfile verify \
+  -l examples/data/agent.lock.json --config examples/data/agent.lock.json --root .
+
+# Normalize a harness transcript for agent-audit
+PYTHONPATH=src python3 -m throughline transcript convert \
+  -i ~/.claude/projects/.../session.jsonl -o session.neutral.jsonl
+```
+
+Stack order for live gates: **Observe/Metrics → ManifestGate → Policy → Cache**.
+Flow construction rejects Cache before ManifestGate/Policy (cache hits would
+skip verification). See `examples/presets/agent-preflight.toml` and
+`.github/workflows/ci.yml` for a CI smoke path.
 
 ## Development
 

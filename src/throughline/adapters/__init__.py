@@ -134,9 +134,14 @@ def wrap(obj: Any, name: str | None = None, method: str | None = None,
                       "skipped": decision["skipped"], "unwrap": unwrap is not None})
 
 
-from . import llm, rag  # noqa: E402  (re-export convenience)
+from . import llm, rag, transcripts  # noqa: E402  (re-export convenience)
 
-# NOTE: MCP is not an adapter — adapters bring components INTO flows, MCP
-# serves flows OUTWARD. It lives in throughline.contrib.mcp (fully optional).
+# NOTE: serving MCP is not an adapter — adapters bring components INTO flows;
+# MCP *serving* lives in throughline.contrib.mcp (fully optional).
+# adapters.mcp brings MCP *tools* into flows; adapters.transcripts normalizes
+# Claude Code / Cursor / Codex session logs for agent-audit.
 
-__all__ = ["wrap", "explain", "render_explain", "llm", "rag", "METHOD_PRIORITY"]
+__all__ = [
+    "wrap", "explain", "render_explain", "llm", "rag", "transcripts",
+    "METHOD_PRIORITY",
+]
