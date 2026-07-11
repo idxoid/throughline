@@ -189,6 +189,7 @@ Harness integrations (library + CLI):
 - `throughline lockfile capture|update|verify` — Claude Code / Cursor / Codex config → lockfile
 - `throughline transcript convert` — normalize harness JSONL for `agent-audit`
 - [`ci-agent-manifest.yml`](ci-agent-manifest.yml) — sample CI job that blocks on lockfile drift
+- [`artifacts/harness-workflow-verification.canvas.tsx`](artifacts/harness-workflow-verification.canvas.tsx) — live-host verification snapshot (extractors operational vs attestable settings; Cursor source-format limits)
 
 ```console
 $ THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. \

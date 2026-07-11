@@ -6,11 +6,16 @@ Supports two on-disk dialects:
   some SDK streams).
 * **CLI / IDE rollout** — ``session_meta`` / ``response_item`` /
   ``event_msg`` / ``turn_context`` as written under ``~/.codex/sessions``.
+
+Rollout ``write_stdin`` calls carry ``args.session_id`` for the live exec
+PTY; the converter also sets ``exec_call_id`` to the originating
+``exec_command``/``exec`` tool call so causal traces stay complete.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .common import text_blocks
@@ -18,6 +23,14 @@ from .common import text_blocks
 _ROLLOUT_TYPES = frozenset({
     "session_meta", "response_item", "event_msg", "turn_context",
 })
+_EXEC_NAMES = frozenset({"exec_command", "exec", "command_execution"})
+_SESSION_ID_RE = re.compile(r"Process running with session ID (\d+)", re.I)
+_EXIT_CODE_RE = re.compile(
+    r"(?:Process\s+)?exited with code (\d+)|Exit code:\s*(\d+)", re.I,
+)
+_DENIED_RE = re.compile(
+    r"Permission denied|Operation not permitted", re.I,
+)
 
 
 def convert_codex(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -116,6 +129,10 @@ def _convert_rollout(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     usage: dict[str, Any] = {}
     model: dict[str, Any] = {}
     harness: dict[str, Any] = {"name": "codex"}
+    call_names: dict[str, str] = {}
+    # PTY session id (from exec yield output) → originating exec call_id
+    exec_by_session: dict[int, str] = {}
+    unresolved = 0
 
     for row in raw:
         kind = row.get("type")
@@ -194,45 +211,73 @@ def _convert_rollout(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         item_type = payload.get("type")
         if item_type == "function_call":
-            events.append({
+            call_id = payload.get("call_id") or payload.get("id")
+            name = payload.get("name") or "function_call"
+            args = _parse_args(payload.get("arguments"))
+            event: dict[str, Any] = {
                 "type": "tool_call",
-                "call_id": payload.get("call_id") or payload.get("id"),
-                "name": payload.get("name") or "function_call",
-                "args": _parse_args(payload.get("arguments")),
+                "call_id": call_id,
+                "name": name,
+                "args": args,
                 **({"ts": ts} if ts else {}),
-            })
+            }
+            _attach_exec_link(event, name, args, exec_by_session)
+            if call_id:
+                call_names[str(call_id)] = name
+                unresolved += 1
+            events.append(event)
         elif item_type == "function_call_output":
+            call_id = payload.get("call_id") or payload.get("id")
+            text = str(payload.get("output") or "")
+            _remember_exec_session(call_id, call_names, text, exec_by_session)
+            if call_id and str(call_id) in call_names:
+                unresolved = max(0, unresolved - 1)
             events.append({
                 "type": "tool_result",
-                "call_id": payload.get("call_id") or payload.get("id"),
-                "status": "ok",
-                "text": str(payload.get("output") or "")[:4000],
+                "call_id": call_id,
+                "status": _result_status(text),
+                "text": text[:4000],
                 **({"ts": ts} if ts else {}),
             })
         elif item_type == "custom_tool_call":
-            events.append({
+            call_id = payload.get("call_id") or payload.get("id")
+            name = payload.get("name") or "custom_tool_call"
+            args = _custom_tool_args(payload)
+            event = {
                 "type": "tool_call",
-                "call_id": payload.get("call_id") or payload.get("id"),
-                "name": payload.get("name") or "custom_tool_call",
-                "args": _custom_tool_args(payload),
+                "call_id": call_id,
+                "name": name,
+                "args": args,
                 **({"ts": ts} if ts else {}),
-            })
+            }
+            _attach_exec_link(event, name, args, exec_by_session)
+            if call_id:
+                call_names[str(call_id)] = name
+                unresolved += 1
+            events.append(event)
         elif item_type == "custom_tool_call_output":
+            call_id = payload.get("call_id") or payload.get("id")
+            text = str(payload.get("output") or "")
+            _remember_exec_session(call_id, call_names, text, exec_by_session)
+            if call_id and str(call_id) in call_names:
+                unresolved = max(0, unresolved - 1)
             events.append({
                 "type": "tool_result",
-                "call_id": payload.get("call_id") or payload.get("id"),
-                "status": "ok",
-                "text": str(payload.get("output") or "")[:4000],
+                "call_id": call_id,
+                "status": _result_status(text),
+                "text": text[:4000],
                 **({"ts": ts} if ts else {}),
             })
 
-    return _finalize(events, session_id, usage)
+    end_status = "incomplete" if unresolved else "ok"
+    return _finalize(events, session_id, usage, end_status=end_status)
 
 
 def _finalize(
     events: list[dict[str, Any]],
     session_id: str | None,
     usage: dict[str, Any],
+    end_status: str = "ok",
 ) -> list[dict[str, Any]]:
     if not events or events[0].get("type") != "session_start":
         events.insert(0, {
@@ -241,9 +286,16 @@ def _finalize(
             "config": {"harness": {"name": "codex"}, "model": {}},
         })
     if not events or events[-1].get("type") != "session_end":
-        events.append({"type": "session_end", "status": "ok", "usage": usage or {}})
-    elif usage and not events[-1].get("usage"):
-        events[-1]["usage"] = usage
+        events.append({
+            "type": "session_end",
+            "status": end_status,
+            "usage": usage or {},
+        })
+    else:
+        if usage and not events[-1].get("usage"):
+            events[-1]["usage"] = usage
+        if end_status != "ok" and events[-1].get("status") == "ok":
+            events[-1]["status"] = end_status
     return events
 
 
@@ -267,3 +319,50 @@ def _custom_tool_args(payload: dict[str, Any]) -> dict[str, Any]:
     if "input" in payload:
         return {"input": payload.get("input")}
     return {}
+
+
+def _attach_exec_link(
+    event: dict[str, Any],
+    name: str,
+    args: dict[str, Any],
+    exec_by_session: dict[int, str],
+) -> None:
+    """Link write_stdin to the exec call that owns its PTY session."""
+    if name != "write_stdin":
+        return
+    sid = args.get("session_id")
+    try:
+        sid_int = int(sid) if sid is not None else None
+    except (TypeError, ValueError):
+        sid_int = None
+    if sid_int is None:
+        return
+    exec_call_id = exec_by_session.get(sid_int)
+    if exec_call_id:
+        event["exec_call_id"] = exec_call_id
+
+
+def _remember_exec_session(
+    call_id: Any,
+    call_names: dict[str, str],
+    text: str,
+    exec_by_session: dict[int, str],
+) -> None:
+    if not call_id:
+        return
+    name = call_names.get(str(call_id), "")
+    if name not in _EXEC_NAMES:
+        return
+    match = _SESSION_ID_RE.search(text)
+    if match:
+        exec_by_session[int(match.group(1))] = str(call_id)
+
+
+def _result_status(text: str) -> str:
+    if _DENIED_RE.search(text):
+        return "denied"
+    match = _EXIT_CODE_RE.search(text)
+    if match:
+        code = int(next(group for group in match.groups() if group is not None))
+        return "ok" if code == 0 else "error"
+    return "ok"

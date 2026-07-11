@@ -730,7 +730,9 @@ PYTHONPATH=src python3 -m throughline transcript convert \
 Stack order for live gates: **Observe/Metrics → ManifestGate → Policy → Cache**.
 Flow construction rejects Cache before ManifestGate/Policy (cache hits would
 skip verification). See `examples/presets/agent-preflight.toml` and
-`.github/workflows/ci.yml` for a CI smoke path.
+`.github/workflows/ci.yml` for a CI smoke path. A live-host verification
+snapshot lives in
+[`examples/artifacts/harness-workflow-verification.canvas.tsx`](examples/artifacts/harness-workflow-verification.canvas.tsx).
 
 ## Development
 
