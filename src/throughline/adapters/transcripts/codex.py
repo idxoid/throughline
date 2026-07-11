@@ -45,6 +45,7 @@ def _convert_bridge(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     session_id = None
     usage: dict[str, Any] = {}
+    seen_calls: set[Any] = set()  # call ids already emitted as tool_call
 
     for row in raw:
         kind = row.get("type")
@@ -87,18 +88,18 @@ def _convert_bridge(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "name": item.get("tool") or item.get("name") or item_type,
                     "args": item.get("arguments") or item.get("args") or {},
                 })
+                seen_calls.add(item.get("id"))
             elif kind == "item.completed":
-                # Ensure a tool_call exists even if started was missing.
-                if not any(
-                    e.get("type") == "tool_call" and e.get("call_id") == item.get("id")
-                    for e in events
-                ):
+                # Ensure a tool_call exists even if started was missing (O(1)
+                # membership, not a scan of every prior event).
+                if item.get("id") not in seen_calls:
                     events.append({
                         "type": "tool_call",
                         "call_id": item.get("id"),
                         "name": item.get("tool") or item.get("name") or item_type,
                         "args": item.get("arguments") or item.get("args") or {},
                     })
+                    seen_calls.add(item.get("id"))
                 result = item.get("result")
                 text = ""
                 if isinstance(result, dict):
