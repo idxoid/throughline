@@ -14,6 +14,11 @@ description = "Agent workflow audit: readiness assessment + manifest + trace + o
 # Stage 2 of decision extraction. The default is a deterministic cue
 # heuristic so the example runs offline; fill with an LLM-backed extractor
 # in a real deployment, or with a `lambda s: None` to run markers-only.
+# Event policy (examples.agent_audit.extract_decisions): full text for
+# assistant/reasoning/plan/commentary; tool_call intent args only;
+# tool_result skipped unless listed in decision_tools; user optional.
+# Pipeline: markers on kept sentences → @semantic only on recall-filter
+# candidates (decided/will/should/…); hard budgets raise, never truncate.
 [slots.semantic]
 description = "sentence -> (class, cue) | None; classes: plan/decision/assumption/action"
 default = "examples.agent_audit:heuristic_semantics"
@@ -56,6 +61,12 @@ uses = "examples.agent_audit:extract_decisions"
 name = "decisions"
 [steps.with]
 semantic = "@semantic"
+# include_user = false
+# decision_tools = []   # opt-in: tool names whose results return structured decisions
+# Hard budgets — exhaustion raises DecisionBudgetExceeded (no silent truncation).
+# max_chars = 200000
+# max_sentences = 4000
+# max_semantic = 400
 
 [[steps]]
 uses = "examples.agent_audit:diff_runs"

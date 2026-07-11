@@ -39,14 +39,33 @@ Three layers, deliberately separate:
   sits upstream in ``ManifestGate`` / ``preflight_session_start``:
   verify → block/warn/pass → execute → trace → audit. The **assessment** side.
 
-Decisions ride along as a fifth, softer channel: assistant sentences
-classed as **plan / decision / assumption / action**. Stage 1 is a
-deterministic marker table (auditable, replayable); stage 2 is the optional
+Decisions ride along as a fifth, softer channel: sentences classed as
+**plan / decision / assumption / action**. Extraction is gated by event
+type — tool-result bodies (source, tests, JSON, stack traces, whole files)
+are **not** treated as agent speech by default:
+
+* assistant / reasoning / plan / commentary — full text
+* tool_call — command / intent-like args only
+* tool_result — skip (opt-in per tool name via ``decision_tools``)
+* user — optional (``include_user``, for constraints/requirements)
+* session / system metadata — never
+
+Pipeline after the event filter:
+
+1. cheap marker / cue extraction on every kept sentence
+2. semantic pass **only** on recall-filter candidates (decision-like
+   stems: decided / will / should / because / instead / approach /
+   assume / plan / switch / avoid / choose) — never on every sentence
+
+Hard budgets (``max_chars`` / ``max_sentences`` / ``max_semantic``) raise
+``DecisionBudgetExceeded`` when exhausted — never silent truncation.
+
+Stage 1 markers are auditable and replayable; stage 2 is the optional
 ``@semantic`` preset slot — filled here with a cheap cue heuristic so the
 example runs offline, pointed at an LLM extractor in a real deployment —
-which may add classes the markers missed, never override or remove them. Every item
-keeps its evidence: the cue that fired, the sentence quote, and the quote's
-char span at its transcript line.
+which may add classes the markers missed, never override or remove them.
+Every item keeps its evidence: the cue that fired, the sentence quote, the
+quote's char span, and the ``channel`` it came from.
 
 `diff_runs` compares completed runs (why two finished sessions differ).
 ``assess_readiness`` assesses whether the recorded candidate environment
@@ -132,6 +151,34 @@ EDIT_TOOLS = {"Edit", "Write", "Create"}
 FILESYSTEM_TOOLS = frozenset({"Read", "Write", "Edit", "Create", "Grep", "Glob",
                               "ListDir"})
 TOKEN_BLOWUP = 1.5  # token-ratio flag threshold, either direction (x or 1/x)
+
+# Event types whose full text is agent speech / planning (not tool I/O).
+_DECISION_FULL_TEXT_TYPES = frozenset({
+    "assistant", "reasoning", "reasoning_summary", "plan", "commentary",
+    "thinking",
+})
+# tool_call args keys that carry intent (commands, goals) — not file bodies.
+_TOOL_ARG_INTENT_KEYS = frozenset({
+    "command", "cmd", "query", "prompt", "message", "description",
+    "goal", "intent", "reason", "title", "plan", "thought", "commentary",
+    "rationale", "summary", "task",
+})
+
+# High-recall gate before @semantic — decision-like stems only. Markers still
+# run on every kept sentence; semantic never scans the full transcript.
+# ``fix`` is included so the example @semantic cues ("the right fix" / "the
+# fix is") remain reachable without a full-sentence semantic scan.
+_SEMANTIC_RECALL_RE = re.compile(
+    r"(?i)(?:\b(?:decided|will|should|because|instead|approach|fix|"
+    r"assum\w*|plans?|switch\w*|avoid\w*|choos\w*|chose|chosen)\b"
+    r"|\bplan:|i['’]ll)"
+)
+
+# Hard caps for decision extraction. Exhaustion raises — never truncates.
+DEFAULT_MAX_CHARS = 200_000
+DEFAULT_MAX_SENTENCES = 4_000
+DEFAULT_MAX_SEMANTIC = 400
+
 
 # Bash substrings that make a tool call risky, with the risk label.
 RISKY_PATTERNS = (
@@ -474,29 +521,95 @@ def _readiness_gate(candidate: dict) -> str:
     return "pass"
 
 
-def extract_decisions(semantic=None):
+def extract_decisions(semantic=None, include_user: bool = False,
+                      decision_tools=None,
+                      max_chars: int = DEFAULT_MAX_CHARS,
+                      max_sentences: int = DEFAULT_MAX_SENTENCES,
+                      max_semantic: int = DEFAULT_MAX_SEMANTIC):
     """Factory for the decisions step (the ``@semantic`` slot arrives here).
 
-    Stage 1 tags sentences with deterministic markers; stage 2 runs the
-    optional ``semantic`` extractor on every sentence — it can add classes
-    the markers missed, never override or remove them, so the auditable core
-    stays replayable. Every item keeps its evidence: the cue that fired, the
-    sentence quote, and the quote's char span at its transcript line.
+    Pipeline: event-type filter → cheap markers on every kept sentence →
+    ``@semantic`` only for recall-filter candidates. Budgets are hard:
+    ``DecisionBudgetExceeded`` on exhaustion (no silent truncation).
+
+    Event policy (see module docstring): full text for assistant/reasoning/
+    plan/commentary; intent-like tool_call args only; tool_result skipped
+    unless the tool name is listed in ``decision_tools`` (opt-in for tools
+    that return structured decisions); user text only when
+    ``include_user=True``; session/system metadata never.
     """
+    allowed_result_tools = {
+        str(name) for name in (decision_tools or ()) if name
+    }
+
     def step(payload, ctx: RunContext) -> dict:
+        budget = DecisionBudget(
+            max_chars=max_chars,
+            max_sentences=max_sentences,
+            max_semantic=max_semantic,
+        )
         decisions = {}
         for label, events in payload["sessions"].items():
             found = []
             for line_no, event in enumerate(events, start=1):
-                if event["type"] == "assistant":
-                    found.extend(
-                        _classify_message(event["text"], line_no, semantic))
+                for text, channel in _decision_texts(
+                        event, include_user=include_user,
+                        decision_tools=allowed_result_tools):
+                    found.extend(_classify_message(
+                        text, line_no, semantic, channel=channel,
+                        budget=budget))
             decisions[label] = found
             ctx.metric("audit.decisions", len(found))
             ctx.metric("audit.decisions.semantic",
                        sum(1 for f in found if f["source"] == "semantic"))
+        ctx.metric("audit.decisions.chars", budget.chars)
+        ctx.metric("audit.decisions.sentences", budget.sentences)
+        ctx.metric("audit.decisions.recall_hits", budget.recall_hits)
+        ctx.metric("audit.decisions.semantic_calls", budget.semantic_calls)
         return {**payload, "decisions": decisions}
     return step
+
+
+class DecisionBudgetExceeded(ValueError):
+    """Decision extraction hit a hard cap; refuse silent truncation."""
+
+
+class DecisionBudget:
+    """Mutable counters with hard limits for decision extraction."""
+
+    __slots__ = ("max_chars", "max_sentences", "max_semantic",
+                 "chars", "sentences", "recall_hits", "semantic_calls")
+
+    def __init__(self, *, max_chars: int, max_sentences: int,
+                 max_semantic: int) -> None:
+        self.max_chars = max_chars
+        self.max_sentences = max_sentences
+        self.max_semantic = max_semantic
+        self.chars = 0
+        self.sentences = 0
+        self.recall_hits = 0
+        self.semantic_calls = 0
+
+    def add_chars(self, n: int) -> None:
+        self.chars += n
+        if self.chars > self.max_chars:
+            raise DecisionBudgetExceeded(
+                f"decision extraction exceeded max_chars={self.max_chars}"
+                f" (saw {self.chars})")
+
+    def add_sentence(self) -> None:
+        self.sentences += 1
+        if self.sentences > self.max_sentences:
+            raise DecisionBudgetExceeded(
+                f"decision extraction exceeded max_sentences="
+                f"{self.max_sentences} (saw {self.sentences})")
+
+    def add_semantic(self) -> None:
+        self.semantic_calls += 1
+        if self.semantic_calls > self.max_semantic:
+            raise DecisionBudgetExceeded(
+                f"decision extraction exceeded max_semantic="
+                f"{self.max_semantic} (saw {self.semantic_calls})")
 
 
 def heuristic_semantics(sentence: str) -> tuple[str, str] | None:
@@ -508,24 +621,83 @@ def heuristic_semantics(sentence: str) -> tuple[str, str] | None:
     return None
 
 
-def _classify_message(text: str, line_no: int, semantic) -> list[dict[str, Any]]:
+def _decision_texts(event: dict[str, Any], *, include_user: bool,
+                    decision_tools: set[str]) -> list[tuple[str, str]]:
+    """Select classifiable text slices from one event under the event policy."""
+    kind = event.get("type")
+    if kind in _DECISION_FULL_TEXT_TYPES:
+        text = (event.get("text") or "").strip()
+        return [(text, kind)] if text else []
+    if kind == "user":
+        if not include_user:
+            return []
+        text = (event.get("text") or "").strip()
+        return [(text, "user")] if text else []
+    if kind == "tool_call":
+        text = _tool_call_intent_text(event.get("args") or {})
+        return [(text, "tool_call")] if text else []
+    if kind == "tool_result":
+        name = event.get("name")
+        if not name or str(name) not in decision_tools:
+            return []
+        text = (event.get("text") or "").strip()
+        return [(text, "tool_result")] if text else []
+    # session_start / session_end / system / unknown — never
+    return []
+
+
+def _tool_call_intent_text(args: Any) -> str:
+    """Keep command/intent fields; drop paths, patches, file bodies, stdin."""
+    if not isinstance(args, dict):
+        return ""
+    parts: list[str] = []
+    for key in sorted(args):
+        if key not in _TOOL_ARG_INTENT_KEYS:
+            continue
+        value = args[key]
+        if value is None:
+            continue
+        text = value if isinstance(value, str) else str(value)
+        text = text.strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _classify_message(text: str, line_no: int, semantic,
+                      channel: str = "assistant",
+                      budget: DecisionBudget | None = None) -> list[dict[str, Any]]:
+    """Marker pass on every sentence; semantic only on recall candidates."""
+    if budget is not None:
+        budget.add_chars(len(text))
     found = []
     for start, end, sentence in _sentences(text):
+        if budget is not None:
+            budget.add_sentence()
         marker_cls = None
         for cls, pattern in MARKER_RULES:
             match = pattern.search(sentence)
             if match:
                 marker_cls = cls
                 found.append(_item(line_no, cls, "marker", "high",
-                                   match.group(0), (start, end), sentence))
+                                   match.group(0), (start, end), sentence,
+                                   channel=channel))
                 break
-        if semantic is not None:
-            verdict = semantic(sentence)
-            if verdict:
-                cls, cue = verdict
-                if cls != marker_cls:
-                    found.append(_item(line_no, cls, "semantic", "medium",
-                                       cue, (start, end), sentence))
+        if semantic is None:
+            continue
+        # Stage 2 only for recall-filter candidates — not every sentence.
+        if not _SEMANTIC_RECALL_RE.search(sentence):
+            continue
+        if budget is not None:
+            budget.recall_hits += 1
+            budget.add_semantic()
+        verdict = semantic(sentence)
+        if verdict:
+            cls, cue = verdict
+            if cls != marker_cls:
+                found.append(_item(line_no, cls, "semantic", "medium",
+                                   cue, (start, end), sentence,
+                                   channel=channel))
     return found
 
 
@@ -541,9 +713,10 @@ def _sentences(text: str):
 
 
 def _item(line: int, cls: str, source: str, confidence: str,
-          cue: str, span: tuple[int, int], quote: str) -> dict[str, Any]:
+          cue: str, span: tuple[int, int], quote: str,
+          channel: str = "assistant") -> dict[str, Any]:
     return {"line": line, "class": cls, "source": source,
-            "confidence": confidence,
+            "confidence": confidence, "channel": channel,
             "evidence": {"cue": cue, "span": list(span), "quote": quote}}
 
 
@@ -1002,7 +1175,8 @@ def render_report(payload, ctx: RunContext) -> dict:
             lines.append(
                 f"- {label} L{decision['line']}"
                 f" [{decision['class']}/{decision['source']}"
-                f" {decision['confidence']}]:"
+                f" {decision['confidence']}"
+                f" via {decision.get('channel', 'assistant')}]:"
                 f" \"{decision['evidence']['quote']}\"")
 
     lines.extend(["", "## Outcome summary"])

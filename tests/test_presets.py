@@ -608,6 +608,160 @@ class PresetTests(unittest.TestCase):
             start, end = i["evidence"]["span"]
             self.assertEqual(text[start:end], i["evidence"]["quote"])
 
+        # Semantic is gated by recall filter — plain narration is skipped.
+        calls = {"n": 0}
+
+        def counting_semantic(sentence):
+            calls["n"] += 1
+            return heuristic_semantics(sentence)
+
+        items = _classify_message(
+            "Updated the file and ran the suite.", 1, counting_semantic)
+        self.assertEqual(items, [])
+        self.assertEqual(calls["n"], 0)
+        items = _classify_message(
+            "I'll switch approaches because the first plan failed.", 1,
+            counting_semantic)
+        self.assertGreater(calls["n"], 0)
+        self.assertTrue(any(i["source"] == "marker" for i in items))
+
+    def test_example_agent_audit_decision_budgets(self):
+        """Hard budgets raise; they must not silently truncate."""
+        from examples.agent_audit import (
+            DecisionBudgetExceeded, extract_decisions,
+        )
+        from throughline.context import RunContext
+
+        sessions = {
+            "baseline": [
+                {"type": "assistant", "text": "I'll do one. I'll do two."},
+                {"type": "assistant", "text": "I'll do three."},
+            ],
+            "candidate": [
+                {"type": "assistant", "text": "I'll do four."},
+            ],
+        }
+        payload = {"sessions": sessions}
+
+        with self.assertRaises(DecisionBudgetExceeded) as caught:
+            extract_decisions(semantic=None, max_sentences=2)(
+                payload, RunContext())
+        self.assertIn("max_sentences=2", str(caught.exception))
+
+        with self.assertRaises(DecisionBudgetExceeded) as caught:
+            extract_decisions(semantic=None, max_chars=10)(
+                payload, RunContext())
+        self.assertIn("max_chars=10", str(caught.exception))
+
+        # Semantic budget: many recall-hit sentences, tiny max_semantic.
+        long = {"sessions": {
+            "baseline": [
+                {"type": "assistant",
+                 "text": " ".join(["I'll switch plans."] * 20)},
+            ],
+            "candidate": [{"type": "assistant", "text": "ok"}],
+        }}
+        with self.assertRaises(DecisionBudgetExceeded) as caught:
+            extract_decisions(semantic=lambda s: ("decision", "x"),
+                              max_semantic=3)(long, RunContext())
+        self.assertIn("max_semantic=3", str(caught.exception))
+
+    def test_example_agent_audit_decision_event_policy(self):
+        """tool_result is skipped unless opt-in; tool_call keeps intent only."""
+        from examples.agent_audit import (
+            _decision_texts, _tool_call_intent_text, extract_decisions,
+        )
+        from throughline.context import RunContext
+
+        # Default: never classify tool_result bodies (source/tests/JSON/…).
+        self.assertEqual(
+            _decision_texts(
+                {"type": "tool_result", "name": "Bash",
+                 "text": "Switching to the vendor installer instead of pip."},
+                include_user=False, decision_tools=set()),
+            [])
+        # Opt-in only for named tools that return structured decisions.
+        opted = _decision_texts(
+            {"type": "tool_result", "name": "Decide",
+             "text": "Switching to the vendor installer instead of pip."},
+            include_user=False, decision_tools={"Decide"})
+        self.assertEqual(len(opted), 1)
+        self.assertEqual(opted[0][1], "tool_result")
+
+        # tool_call: command/intent fields only — not file bodies / patches.
+        self.assertEqual(
+            _tool_call_intent_text({
+                "command": "pytest -q",
+                "file_path": "api/client.py",
+                "old_string": "def fetch():\n    pass\n",
+                "new_string": "I'll rewrite everything as async.\n",
+            }),
+            "pytest -q")
+        self.assertEqual(
+            _decision_texts(
+                {"type": "tool_call", "name": "Edit",
+                 "args": {"file_path": "x.py",
+                          "new_string": "Switching to async instead of sync."}},
+                include_user=False, decision_tools=set()),
+            [])
+        self.assertEqual(
+            _decision_texts(
+                {"type": "tool_call", "name": "Bash",
+                 "args": {"command": "Switching to the vendor script."}},
+                include_user=False, decision_tools=set())[0][1],
+            "tool_call")
+
+        # session metadata never; user only when include_user.
+        self.assertEqual(
+            _decision_texts({"type": "session_start", "session_id": "s"},
+                            include_user=True, decision_tools=set()),
+            [])
+        self.assertEqual(
+            _decision_texts(
+                {"type": "user", "text": "Switching to retries is required."},
+                include_user=False, decision_tools=set()),
+            [])
+        self.assertEqual(
+            _decision_texts(
+                {"type": "user", "text": "Switching to retries is required."},
+                include_user=True, decision_tools=set())[0][1],
+            "user")
+
+        # End-to-end step: huge tool_result does not contribute decisions.
+        step = extract_decisions(semantic=None)
+        payload = {
+            "sessions": {
+                "baseline": [
+                    {"type": "session_start", "session_id": "s"},
+                    {"type": "assistant",
+                     "text": "I'll patch the client."},
+                    {"type": "tool_result", "name": "Read",
+                     "text": "Switching to async.\n" * 5000},
+                    {"type": "session_end", "status": "ok"},
+                ],
+            },
+        }
+        out = step(payload, RunContext())
+        self.assertEqual([d["class"] for d in out["decisions"]["baseline"]],
+                         ["action"])
+        self.assertEqual(out["decisions"]["baseline"][0]["channel"],
+                         "assistant")
+
+        # Opt-in decision_tools surfaces tool_result channel.
+        step_opt = extract_decisions(semantic=None, decision_tools=["Decide"])
+        payload_opt = {
+            "sessions": {
+                "baseline": [
+                    {"type": "tool_result", "name": "Decide",
+                     "text": "Switching to the vendor script."},
+                ],
+            },
+        }
+        out_opt = step_opt(payload_opt, RunContext())
+        self.assertEqual(
+            [(d["class"], d["channel"]) for d in out_opt["decisions"]["baseline"]],
+            [("decision", "tool_result")])
+
     def test_example_agent_audit_result_normalizers(self):
         """Pytest timing noise must not masquerade as behavioral divergence."""
         from examples.agent_audit import _result_hash
