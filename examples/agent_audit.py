@@ -21,17 +21,9 @@ Three layers, deliberately separate:
   one entry per call — tool, arguments hash, status (ok / error / denied /
   no result), result hash, duration. Results join their calls by
   ``call_id`` (the tool-use id real harnesses record); a transcript without
-  ids falls back to tool-name inference and the whole trace is marked
-  ``trace_quality="inferred"`` — with parallel same-tool calls in flight
-  (the manifests literally declare ``parallel-tools``), name inference can
-  attach both results to the wrong calls, so only an id join earns
-  ``"exact"``. Two runs can share a manifest and both end green yet get
-  there along different paths; the trace diff aligns both sequences on
-  (tool, arguments), names the **first behavioral divergence**, then
-  classifies the rest of the gap: changed arguments, changed result,
-  permission denials, missing / added / reordered calls. An empty trace
-  diff is itself a finding: identical behavior clears the run even when the
-  manifests drifted. The **path** side.
+  ids falls back to tool-name inference — pairing quality is separate from
+  trace completeness (unresolved calls, orphan results, duplicate call_ids).
+  An empty trace diff means identical behavior even when manifests drifted.
 - **outcome fingerprint**: what the run actually *did*, across dimensions —
   status is only one. Also: which files it touched (including test files),
   risky tool calls, parsed test
@@ -40,11 +32,13 @@ Three layers, deliberately separate:
   vanished risky call, a shrunken test suite, or a big token drop is still
   divergence — with a separate ``assessment`` (regression / improvement /
   neutral) judging direction. The **effect** side.
-- **readiness** ("preflight gate"): whether a run can *start* cleanly in the
-  recorded environment — pinned source snapshot (clean tree, Merkle root vs
-  reference at same commit), sandbox/tool denials, and whether a denial forced
-  a risky workaround. Distinct from post-hoc drift: a session can finish
-  ``status=ok`` yet fail readiness for the next run. The **gate** side.
+- **readiness** (environment readiness *assessment*): from a *completed*
+  session's manifest and trace, was the recorded environment fit for a clean
+  rerun — pinned snapshot, denials, risky workarounds after denial. This is
+  not live preflight enforcement: it does not compare a lockfile to
+  ``capture_current_environment()`` or block before the agent starts. A future
+  ``verify_manifest(expected, observed, policy)`` layer sits upstream:
+  verify → block/warn/pass → execute → trace → audit. The **assessment** side.
 
 Decisions ride along as a fifth, softer channel: assistant sentences
 classed as **plan / decision / assumption / action**. Stage 1 is a
@@ -56,15 +50,17 @@ keeps its evidence: the cue that fired, the sentence quote, and the quote's
 char span at its transcript line.
 
 `diff_runs` compares completed runs (why two finished sessions differ).
-``assess_readiness`` answers the prior question: can a new run even start
-cleanly in this environment — manifest snapshot pinned, sandbox not blocking
-required tools, no workaround-only path to green. The session
+``assess_readiness`` assesses whether the recorded candidate environment
+looked fit for a clean rerun (post-hoc). Denials surface here and in matched
+trace diffs only when status differs between runs. The session
 fixtures are a neutral JSONL shape (one event per line) modeled on what
 coding-agent harnesses record on disk; a real deployment would point the
 same flow at exported Claude Code / Cursor / Codex transcripts. Secrets
 never belong in a manifest (env vars are name -> value-hash), and policy
-egress recursively redacts anything an agent leaks — in the report string
-and in every structured field of the public output alike. The lineage
+egress recursively redacts anything an agent leaks — via an example-grade
+``SECRET_RE`` (``sk-``/``key-``/``token-`` prefixes only; swap for a
+``@secret_detector`` slot in production). Scrubbing applies to the report
+string and every structured field of the public output alike. The lineage
 blame trail applies the same scrub at capture time: lineage's run-end
 sweep re-attributes the egress redaction in the final blame, but earlier
 ledger records keep whatever text they captured, so the example scrubs
@@ -117,6 +113,9 @@ SEMANTIC_CUES = (
     ("action", re.compile(
         r"\bnext step is\b|\btime to\b", re.IGNORECASE)),
 )
+# Example-grade secret detector — catches sk-/key-/token- prefixes only.
+# Production deployments should fill a @secret_detector slot (ghp_, AKIA…,
+# Bearer tokens, JWT, etc.).
 SECRET_RE = re.compile(r"\b(?:sk|key|token)-[A-Za-z0-9-]{8,}\b")
 TEST_PATH_RE = re.compile(r"(^|/)tests?/|(^|/)test_|_test\.")
 TESTS_RE = re.compile(
@@ -231,21 +230,25 @@ def assess_outcomes(payload, ctx: RunContext) -> dict:
         red = False  # a failing test run not yet followed by a green one
         red_test_edits = red_source_edits = 0
         test_only_fix = False
+        tool_event = 0
         for event in events:
-            if event["type"] == "tool_call" and event["name"] in EDIT_TOOLS:
-                path = event.get("args", {}).get("file_path", "")
-                files.append(path)
-                if TEST_PATH_RE.search(path):
-                    tests_touched.append(path)
-                    red_test_edits += 1 if red else 0
-                else:
-                    red_source_edits += 1 if red else 0
-            elif event["type"] == "tool_call" and event["name"] == "Bash":
-                command = event.get("args", {}).get("command", "")
-                for needle, risk in RISKY_PATTERNS:
-                    if needle in command:
-                        risky.append({"command": command, "risk": risk})
-                        break
+            if event["type"] == "tool_call":
+                tool_event += 1
+                if event["name"] in EDIT_TOOLS:
+                    path = event.get("args", {}).get("file_path", "")
+                    files.append(path)
+                    if TEST_PATH_RE.search(path):
+                        tests_touched.append(path)
+                        red_test_edits += 1 if red else 0
+                    else:
+                        red_source_edits += 1 if red else 0
+                elif event["name"] == "Bash":
+                    command = event.get("args", {}).get("command", "")
+                    for needle, risk in RISKY_PATTERNS:
+                        if needle in command:
+                            risky.append({"event": tool_event, "command": command,
+                                            "risk": risk})
+                            break
             elif event["type"] == "tool_result":
                 matches = TESTS_RE.findall(event.get("text", ""))
                 if matches:  # last test-bearing result wins (re-runs overwrite)
@@ -282,27 +285,26 @@ def assess_outcomes(payload, ctx: RunContext) -> dict:
 
 def extract_traces(payload, ctx: RunContext) -> dict:
     """Normalize tool activity into one comparable trace entry per call."""
-    traces, quality = {}, {}
+    traces, health = {}, {}
     for label, events in payload["sessions"].items():
-        traces[label], quality[label] = _build_trace(events)
+        traces[label], health[label] = _build_trace(events)
         ctx.metric("audit.tool_calls", len(traces[label]))
-        if quality[label] != "exact":
+        if health[label]["pairing_quality"] == "inferred":
             ctx.metric("audit.trace_inferred", 1)
-    return {**payload, "traces": traces, "trace_quality": quality}
+        if health[label]["trace_completeness"] == "partial":
+            ctx.metric("audit.trace_partial", 1)
+    return {**payload, "traces": traces, "trace_health": health}
 
 
-def _build_trace(events: list[dict]) -> tuple[list[dict[str, Any]], str]:
+def _build_trace(events: list[dict]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Pair each tool_result with its call. The join key is ``call_id``;
-    tool-name inference (first same-tool call still waiting — batched
-    parallel calls conventionally stream results in call order) is only a
-    fallback, and one inferred attachment downgrades the whole trace to
-    trace_quality="inferred": with parallel same-tool calls in flight,
-    name inference can attach both results to the wrong calls and nothing
-    in the transcript would show it. A call accepts at most one result;
-    a result whose call_id matches nothing is dropped, not guessed."""
+    tool-name inference is only a fallback. Returns trace entries plus a
+    health record separating pairing quality from transcript completeness."""
     trace: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
     inferred = False
+    duplicate_call_ids = 0
+    orphan_results = 0
     for line_no, event in enumerate(events, start=1):
         if event["type"] == "tool_call":
             args = event.get("args", {})
@@ -319,33 +321,56 @@ def _build_trace(events: list[dict]) -> tuple[list[dict[str, Any]], str]:
                 "duration_ms": None,
             }
             trace.append(entry)
-            if entry["call_id"] is not None:
-                by_id[entry["call_id"]] = entry
+            call_id = entry["call_id"]
+            if call_id is not None:
+                if call_id in by_id:
+                    duplicate_call_ids += 1
+                by_id[call_id] = entry
         elif event["type"] == "tool_result":
             call_id = event.get("call_id")
+            call = None
             if call_id is not None:
                 call = by_id.get(call_id)
+                if call is None:
+                    orphan_results += 1
             else:
                 call = next((t for t in trace
                              if t["tool"] == event.get("name")
                              and t["status"] == "no_result"), None)
-                inferred = inferred or call is not None
+                if call is not None:
+                    inferred = True
+                else:
+                    orphan_results += 1
             if call is not None and call["status"] == "no_result":
                 call["status"] = event.get("status", "ok")
                 call["result_hash"] = _result_hash(
                     call["tool"], call["args"], event.get("text", ""))
-                # longer than any render width, so truncation shows "…"
                 call["result_head"] = event.get("text", "")[:80]
                 call["duration_ms"] = event.get("duration_ms")
-    return trace, ("inferred" if inferred else "exact")
+    unresolved_calls = sum(1 for entry in trace if entry["status"] == "no_result")
+    if duplicate_call_ids:
+        pairing_quality = "invalid"
+    elif inferred:
+        pairing_quality = "inferred"
+    else:
+        pairing_quality = "exact"
+    incomplete = unresolved_calls or orphan_results or duplicate_call_ids
+    health = {
+        "pairing_quality": pairing_quality,
+        "trace_completeness": "partial" if incomplete else "complete",
+        "unresolved_calls": unresolved_calls,
+        "orphan_results": orphan_results,
+        "duplicate_call_ids": duplicate_call_ids,
+    }
+    return trace, health
 
 
 def assess_readiness(payload, ctx: RunContext) -> dict:
-    """Preflight gate per session: can a new run start cleanly here?
+    """Environment readiness assessment per session (post-hoc, not live gate).
 
-    Uses the manifest (declared environment) plus trace evidence (denials,
-    workarounds). The candidate is checked against the baseline manifest as
-    the reference snapshot when both share a commit."""
+    Uses the recorded manifest plus trace evidence. High-severity config drift
+    (prompt, model, MCP, …) is reported separately in ``drift`` — not folded
+    into ``readiness_gate`` until a live ``verify_manifest`` layer exists."""
     reference = payload["manifests"]["baseline"]
     readiness = {}
     for label in ("baseline", "candidate"):
@@ -399,12 +424,16 @@ def _readiness_for(manifest: dict, trace: list, outcome: dict,
                        f" {_compact(entry['result_head'], 60)}"),
         })
 
-    if denied and outcome.get("risky_calls"):
-        blockers.append({
-            "id": "sandbox_workaround_required",
-            "detail": ("Sandbox denial forced a risky workaround"
-                       " before the run could proceed."),
-        })
+    if denied:
+        first_denial = min(entry["event"] for entry in denied)
+        later_risky = [call for call in outcome.get("risky_calls", [])
+                       if call.get("event", 0) > first_denial]
+        if later_risky:
+            blockers.append({
+                "id": "sandbox_workaround_after_denial",
+                "detail": ("Sandbox denial co-occurred with a later risky"
+                           " workaround."),
+            })
 
     if config.get("network", {}).get("mode") == "restricted":
         for entry in trace:
@@ -605,13 +634,21 @@ def _compare_outcomes(base: dict, cand: dict) -> list[dict[str, Any]]:
               removed=removed_risky,
               baseline=base["risky_calls"], candidate=cand["risky_calls"])
 
-    base_total = base["usage"]["total_tokens"] or 1
-    ratio = round(cand["usage"]["total_tokens"] / base_total, 2)
-    if ratio >= TOKEN_BLOWUP or ratio * TOKEN_BLOWUP <= 1:
-        entry("tokens_ratio",
-              "regression" if ratio > 1 else "improvement", "medium",
-              baseline=base["usage"]["total_tokens"],
-              candidate=cand["usage"]["total_tokens"], ratio=ratio)
+    base_tokens = base["usage"]["total_tokens"]
+    cand_tokens = cand["usage"]["total_tokens"]
+    if base_tokens != cand_tokens:
+        if base_tokens == 0:
+            entry("tokens_changed", "regression", "medium",
+                  baseline=0, candidate=cand_tokens, ratio=None)
+        elif cand_tokens == 0:
+            entry("tokens_changed", "improvement", "medium",
+                  baseline=base_tokens, candidate=0, ratio=0)
+        else:
+            ratio = round(cand_tokens / base_tokens, 2)
+            if ratio >= TOKEN_BLOWUP or ratio * TOKEN_BLOWUP <= 1:
+                entry("tokens_ratio",
+                      "regression" if ratio > 1 else "improvement", "medium",
+                      baseline=base_tokens, candidate=cand_tokens, ratio=ratio)
     return out
 
 
@@ -712,11 +749,6 @@ def _compare_traces(base: list, cand: list) -> list[dict[str, Any]]:
                      "baseline": _call_view(b) if b else None,
                      "candidate": _call_view(c) if c else None}
 
-    for side, trace in (("baseline", base), ("candidate", cand)):
-        for entry in trace:
-            if entry["status"] == "denied":
-                out.append({"kind": "denied", "severity": TRACE_SEVERITY["denied"],
-                            "side": side, "call": _call_view(entry)})
     if missing:
         out.append({"kind": "calls_missing", "severity": TRACE_SEVERITY["calls_missing"],
                     "side": "baseline", "calls": [_call_view(e) for e in missing]})
@@ -878,10 +910,10 @@ def render_report(payload, ctx: RunContext) -> dict:
         f" vs {manifests['candidate']['session_id']}",
         "",
         f"Readiness gate: {payload['readiness_gate']}"
-        f" (can a new run start cleanly in the candidate environment?)",
+        f" (post-hoc assessment of the candidate environment; not live preflight)",
         f"Verdict: {payload['verdict']}",
         "",
-        "## Environment readiness (preflight)",
+        "## Environment readiness (assessment)",
     ]
     for label in ("baseline", "candidate"):
         ready = payload["readiness"][label]
@@ -901,12 +933,20 @@ def render_report(payload, ctx: RunContext) -> dict:
         lines.append("- none")
 
     lines.extend(["", "## Trace divergence (behavior)"])
-    quality = payload["trace_quality"]
-    caveat = ("" if all(q == "exact" for q in quality.values())
+    for label in ("baseline", "candidate"):
+        h = payload["trace_health"][label]
+        lines.append(
+            f"Trace health ({label}): pairing={h['pairing_quality']},"
+            f" completeness={h['trace_completeness']}"
+            f" (unresolved={h['unresolved_calls']},"
+            f" orphan_results={h['orphan_results']},"
+            f" duplicate_call_ids={h['duplicate_call_ids']})")
+    caveat = ("" if all(h["pairing_quality"] == "exact"
+                        for h in payload["trace_health"].values())
               else " — inferred pairing is best-effort; parallel same-tool"
                    " calls can mis-pair results")
-    lines.append(f"Trace quality: baseline={quality['baseline']},"
-                 f" candidate={quality['candidate']}{caveat}")
+    if caveat:
+        lines.append(caveat.strip())
     for item in payload["trace_divergence"] or []:
         lines.extend(_render_trace_item(item))
     if not payload["trace_divergence"]:
@@ -940,7 +980,7 @@ def render_report(payload, ctx: RunContext) -> dict:
         "readiness_gate": payload["readiness_gate"],
         "readiness": payload["readiness"],
         "drift": payload["drift"],
-        "trace_quality": payload["trace_quality"],
+        "trace_health": payload["trace_health"],
         "trace_divergence": payload["trace_divergence"],
         "divergence": payload["divergence"],
         "outcomes": outcomes,
@@ -1017,6 +1057,10 @@ def _render_divergence(item: dict[str, Any]) -> str:
         return "; ".join(f"{c['risk']}: {c['command']}" for c in item["removed"])
     if dim == "tokens_ratio":
         return f"{item['baseline']} -> {item['candidate']} ({item['ratio']}x)"
+    if dim == "tokens_changed":
+        ratio = item.get("ratio")
+        suffix = f" ({ratio}x)" if ratio is not None else ""
+        return f"{item['baseline']} -> {item['candidate']}{suffix}"
     return _compact(item.get("candidate"))
 
 
@@ -1030,9 +1074,8 @@ def _compact(value: Any, limit: int = 48) -> str:
 
 def redact_secrets(checkpoint: str, value: Any, ctx: RunContext):
     """kind="policy": recursive egress redaction over the whole public
-    output — a secret rides identically in the report string and in the
-    structured fields (risky commands, trace call views), so scrubbing
-    only the report leaves the JSON output leaking."""
+    output — example-grade ``SECRET_RE`` only; swap for ``@secret_detector``
+    in production (GitHub tokens, AWS keys, Bearer/JWT, etc.)."""
     redacted, count = _redact_value(value)
     if count:
         return Transform(redacted, f"redacted {count} secret(s)")

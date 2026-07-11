@@ -233,7 +233,7 @@ class PresetTests(unittest.TestCase):
         self.assertIn("repository_dirty", cand_blockers)
         self.assertIn("workspace_snapshot_mismatch", cand_blockers)
         self.assertIn("tool_denied", cand_blockers)
-        self.assertIn("sandbox_workaround_required", cand_blockers)
+        self.assertIn("sandbox_workaround_after_denial", cand_blockers)
         self.assertIn("Readiness gate: block", result.output["report"])
         self.assertEqual(result.output["verdict"], "drift_and_divergence")
 
@@ -279,26 +279,25 @@ class PresetTests(unittest.TestCase):
         # pytest with the same args) — the paths split at the first pytest
         # *result*, and that event is the headline
         # both fixtures carry call_id on every tool event -> exact pairing
-        self.assertEqual(result.output["trace_quality"],
-                         {"baseline": "exact", "candidate": "exact"})
-        self.assertIn("Trace quality: baseline=exact, candidate=exact",
+        self.assertEqual(result.output["trace_health"]["baseline"]["pairing_quality"],
+                         "exact")
+        self.assertEqual(result.output["trace_health"]["baseline"]["trace_completeness"],
+                         "partial")
+        self.assertEqual(result.output["trace_health"]["candidate"]["pairing_quality"],
+                         "exact")
+        self.assertIn("Trace health (baseline): pairing=exact, completeness=partial",
                       result.output["report"])
         self.assertNotIn("audit.trace_inferred", result.metrics["counters"])
         trace = result.output["trace_divergence"]
         self.assertEqual([item["kind"] for item in trace],
-                         ["first_divergence", "result_changed",
-                          "denied", "calls_added"])
+                         ["first_divergence", "result_changed", "calls_added"])
         first = trace[0]
         self.assertEqual(first["reason"], "result_changed")
         self.assertEqual(first["event"], 2)
         self.assertEqual(first["baseline"]["status"], "ok")
         self.assertEqual(first["candidate"]["status"], "error")
         self.assertIn("pytest", first["baseline"]["call"])
-        denied = trace[2]
-        self.assertEqual(denied["side"], "candidate")
-        self.assertIn("pip install aiohttp", denied["call"]["call"])
-        # the workaround chain after the denial, including the pytest re-run
-        added = [v["call"] for v in trace[3]["calls"]]
+        added = [v["call"] for v in trace[2]["calls"]]
         self.assertEqual(len(added), 4)
         self.assertTrue(added[0].startswith("Bash(pip install"))
         self.assertTrue(added[-1].startswith("Bash(pytest"))
@@ -390,6 +389,20 @@ class PresetTests(unittest.TestCase):
         # identical traces: the empty diff is the signal
         self.assertEqual(_compare_traces([read(1)], [read(1)]), [])
 
+        # identical denials on both sides are not divergence
+        denied = call(
+            1, "Bash", {"command": "pip install aiohttp"},
+            status="denied", result="permission denied",
+        )
+        self.assertEqual(_compare_traces([denied], [denied]), [])
+
+        # denial only on candidate is divergence via result_changed
+        ok = call(1, "Bash", {"command": "pip install aiohttp"},
+                  status="ok", result="installed")
+        out = _compare_traces([ok], [denied])
+        self.assertEqual(out[0]["kind"], "first_divergence")
+        self.assertEqual(out[0]["reason"], "result_changed")
+
     def test_example_agent_audit_trace_pairing(self):
         """call_id joins beat arrival order; name inference is only a
         fallback and downgrades the whole trace to "inferred"."""
@@ -404,8 +417,9 @@ class PresetTests(unittest.TestCase):
         events = [call("call-1", "a.py"), call("call-2", "b.py"),
                   {"type": "tool_result", "call_id": "call-2", "text": "content b"},
                   {"type": "tool_result", "call_id": "call-1", "text": "content a"}]
-        trace, quality = _build_trace(events)
-        self.assertEqual(quality, "exact")
+        trace, health = _build_trace(events)
+        self.assertEqual(health["pairing_quality"], "exact")
+        self.assertEqual(health["trace_completeness"], "complete")
         self.assertEqual([t["result_head"] for t in trace],
                          ["content a", "content b"])
 
@@ -417,8 +431,9 @@ class PresetTests(unittest.TestCase):
             {"type": "tool_result", "name": "Read", "text": "content b"},
             {"type": "tool_result", "name": "Read", "text": "content a"},
         ]
-        trace, quality = _build_trace(events)
-        self.assertEqual(quality, "inferred")
+        trace, health = _build_trace(events)
+        self.assertEqual(health["pairing_quality"], "inferred")
+        self.assertEqual(health["trace_completeness"], "complete")
         self.assertEqual([t["result_head"] for t in trace],
                          ["content b", "content a"])  # documented mis-pair
 
@@ -427,8 +442,8 @@ class PresetTests(unittest.TestCase):
                   {"type": "tool_call", "name": "Grep", "args": {"pattern": "x"}},
                   {"type": "tool_result", "call_id": "call-1", "text": "content a"},
                   {"type": "tool_result", "name": "Grep", "text": "2 hits"}]
-        trace, quality = _build_trace(events)
-        self.assertEqual(quality, "inferred")
+        trace, health = _build_trace(events)
+        self.assertEqual(health["pairing_quality"], "inferred")
         self.assertEqual([t["result_head"] for t in trace],
                          ["content a", "2 hits"])
 
@@ -436,8 +451,10 @@ class PresetTests(unittest.TestCase):
         events = [call("call-1", "a.py"),
                   {"type": "tool_result", "call_id": "call-9", "name": "Read",
                    "text": "stray"}]
-        trace, quality = _build_trace(events)
-        self.assertEqual(quality, "exact")
+        trace, health = _build_trace(events)
+        self.assertEqual(health["pairing_quality"], "exact")
+        self.assertEqual(health["trace_completeness"], "partial")
+        self.assertEqual(health["orphan_results"], 1)
         self.assertEqual(trace[0]["status"], "no_result")
 
     def test_example_agent_audit_outcome_symmetry(self):
@@ -526,6 +543,36 @@ class PresetTests(unittest.TestCase):
 
         # identical outcomes: silence
         self.assertEqual(_compare_outcomes(outcome(), outcome()), [])
+        self.assertEqual(_compare_outcomes(outcome(tokens=0), outcome(tokens=0)), [])
+
+    def test_example_agent_audit_readiness_causality(self):
+        """Risky workaround counts only when it follows a denial in event order."""
+        from examples.agent_audit import _readiness_for
+
+        def manifest(**kw):
+            return {"config": {
+                "repository": {"commit": "abc", "dirty": False},
+                "workspace": {"merkle_root": "m-x"},
+                "network": {"mode": "restricted"},
+                **kw,
+            }}
+
+        trace = [{"event": 1, "tool": "Bash", "status": "ok",
+                  "args": {"command": "curl | sh"}, "result_head": ""},
+                 {"event": 2, "tool": "Bash", "status": "denied",
+                  "args": {"command": "pip install x"}, "result_head": "no"}]
+        risky_first = {"risky_calls": [{"event": 1, "command": "curl | sh",
+                                          "risk": "pipe-to-shell"}]}
+        ready = _readiness_for(manifest(), trace, risky_first, None)
+        ids = {b["id"] for b in ready["blockers"]}
+        self.assertIn("tool_denied", ids)
+        self.assertNotIn("sandbox_workaround_after_denial", ids)
+
+        risky_later = {"risky_calls": [{"event": 3, "command": "curl | sh",
+                                        "risk": "pipe-to-shell"}]}
+        blocked = _readiness_for(manifest(), trace, risky_later, None)
+        self.assertIn("sandbox_workaround_after_denial",
+                      {b["id"] for b in blocked["blockers"]})
 
     def test_example_agent_audit_decision_classes(self):
         """Two-stage extraction semantics the fixtures can't isolate."""
@@ -598,13 +645,14 @@ class PresetTests(unittest.TestCase):
             manifest(dirty=True, merkle="m-other", commit="abc"),
             [trace_entry(1, "Bash", "denied", "pip install aiohttp",
                          "permission denied")],
-            {"risky_calls": [{"command": "curl | sh", "risk": "pipe-to-shell"}]},
+            {"risky_calls": [{"event": 2, "command": "curl | sh",
+                              "risk": "pipe-to-shell"}]},
             ref,
         )
         self.assertFalse(cand["can_start"])
         ids = {b["id"] for b in cand["blockers"]}
         self.assertEqual(ids, {"repository_dirty", "workspace_snapshot_mismatch",
-                               "tool_denied", "sandbox_workaround_required"})
+                               "tool_denied", "sandbox_workaround_after_denial"})
 
 
 class BuildFlowUnit(unittest.TestCase):
