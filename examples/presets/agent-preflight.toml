@@ -1,0 +1,31 @@
+# Live manifest preflight: capture current environment, verify against lockfile,
+# block/warn before any agent steps run.
+# Run from the repository root:
+#   THROUGHLINE_PRESETS=examples/presets PYTHONPATH=src:. python3 -m throughline run agent-preflight --json-input -i '{"harness_config":{...}}' --json
+name = "agent-preflight"
+description = "Live manifest capture + policy verify before agent execution."
+
+[[steps]]
+uses = "examples.agent_preflight:render_report"
+name = "report"
+
+[middleware.observe]
+
+[middleware.metrics]
+
+[middleware.manifest_gate]
+lockfile = "examples/data/agent.lock.json"
+on_fail = "raise"
+root = "."
+
+[middleware.validate]
+scope = "final"
+on_fail = "raise"
+[middleware.validate.schema]
+type = "object"
+required = ["gate", "violations", "observed", "report"]
+[middleware.validate.schema.properties.gate]
+type = "string"
+enum = ["pass", "warn", "block"]
+[middleware.validate.schema.properties.report]
+type = "string"

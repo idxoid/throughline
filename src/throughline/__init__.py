@@ -27,8 +27,8 @@ Quickstart:
 
 from .context import EventBus, Result, RunContext
 from .errors import (ArtifactExpired, EarlyReturn, FlowError, ThroughlineError,
-                     PolicyError, PresetError, QuotaExceeded, RegistryError,
-                     StoreError, ValidationError, WrapError)
+                     ManifestVerifyError, PolicyError, PresetError, QuotaExceeded,
+                     RegistryError, StoreError, ValidationError, WrapError)
 from .flow import Flow
 from .middleware import Handled, Middleware
 from .presets import build_flow, find_preset, list_presets, load_preset, load_preset_config
@@ -37,7 +37,7 @@ from .registry import (KINDS, available, check_kind, entries, load_plugins,
 from .step import Step, as_step, branch, map_step, parallel, step
 from .store import ArtifactRef, MemoryArtifactStore
 from .adapters import explain, wrap
-from . import adapters, modules
+from . import adapters, manifest, modules
 
 __version__ = "0.1.0"
 
@@ -53,7 +53,7 @@ __all__ = [
     "load_preset", "load_preset_config", "build_flow", "list_presets", "find_preset",
     "ThroughlineError", "FlowError", "ValidationError", "RegistryError", "PresetError",
     "WrapError", "StoreError", "ArtifactExpired",
-    "EarlyReturn", "QuotaExceeded", "PolicyError",
-    "adapters", "modules",
+    "EarlyReturn", "QuotaExceeded", "PolicyError", "ManifestVerifyError",
+    "adapters", "modules", "manifest",
     "__version__",
 ]

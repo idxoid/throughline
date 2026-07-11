@@ -89,6 +89,21 @@ class PolicyError(ThroughlineError):
         self.reason = reason
 
 
+class ManifestVerifyError(ThroughlineError):
+    """Manifest verification blocked the run (ManifestGate on_fail='raise').
+
+    Attributes:
+        gate: verify gate that tripped (typically ``block``).
+        violations: structured violation records from ``verify_manifest``.
+    """
+
+    def __init__(self, message: str, *, gate: str = "block",
+                 violations: list | None = None):
+        super().__init__(message)
+        self.gate = gate
+        self.violations = violations or []
+
+
 class ValidationError(ThroughlineError):
     """A validator rejected a payload.
 

@@ -35,9 +35,8 @@ Three layers, deliberately separate:
 - **readiness** (environment readiness *assessment*): from a *completed*
   session's manifest and trace, was the recorded environment fit for a clean
   rerun — pinned snapshot, denials, risky workarounds after denial. This is
-  not live preflight enforcement: it does not compare a lockfile to
-  ``capture_current_environment()`` or block before the agent starts. A future
-  ``verify_manifest(expected, observed, policy)`` layer sits upstream:
+  not live preflight enforcement; it consumes recorded facts. Live enforcement
+  sits upstream in ``ManifestGate`` / ``preflight_session_start``:
   verify → block/warn/pass → execute → trace → audit. The **assessment** side.
 
 Decisions ride along as a fifth, softer channel: assistant sentences
@@ -77,6 +76,11 @@ from pathlib import Path
 from typing import Any
 
 from throughline.context import RunContext
+from throughline.manifest.session import (
+    capture_drift as compute_capture_drift,
+    declared_config,
+    effective_environment,
+)
 from throughline.modules.policy import Transform
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "agent_sessions"
@@ -204,13 +208,21 @@ def load_sessions(payload, ctx: RunContext) -> dict:
 
 
 def build_manifests(payload, ctx: RunContext) -> dict:
-    """Distill each session into its run manifest (effective config)."""
+    """Distill each session into its run manifest (effective config).
+
+    When ``session_start.config`` carries harness metadata from Phase 3
+    capture (``observed``, ``verify``), declared config is split out so
+    audit diffs stay comparable while capture drift remains inspectable.
+    """
     manifests = {}
     for label, events in payload["sessions"].items():
         start = next(e for e in events if e["type"] == "session_start")
+        raw = start["config"]
         manifests[label] = {
             "session_id": start["session_id"],
-            "config": start["config"],
+            "config": declared_config(raw),
+            "observed": raw.get("observed"),
+            "verify": raw.get("verify"),
         }
     return {**payload, "manifests": manifests}
 
@@ -391,7 +403,7 @@ def assess_readiness(payload, ctx: RunContext) -> dict:
 
 def _readiness_for(manifest: dict, trace: list, outcome: dict,
                    reference: dict | None) -> dict[str, Any]:
-    config = manifest["config"]
+    config = effective_environment(manifest)
     blockers: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
 
@@ -401,8 +413,9 @@ def _readiness_for(manifest: dict, trace: list, outcome: dict,
             "detail": "Working tree is dirty; input source snapshot is not pinned.",
         })
 
-    ref_config = reference["config"] if reference else None
-    if ref_config:
+    ref_manifest = reference if reference else None
+    if ref_manifest:
+        ref_config = effective_environment(ref_manifest)
         repo = config.get("repository", {})
         ref_repo = ref_config.get("repository", {})
         if repo.get("commit") == ref_repo.get("commit"):
@@ -540,13 +553,19 @@ def diff_runs(payload, ctx: RunContext) -> dict:
     drift: list[dict[str, Any]] = []
     _diff_tree(base_m["config"], cand_m["config"], "", drift)
 
+    manifest_capture_drift: dict[str, list[dict[str, Any]]] = {}
+    for label, manifest in (("baseline", base_m), ("candidate", cand_m)):
+        if manifest.get("observed"):
+            manifest_capture_drift[label] = compute_capture_drift(
+                manifest["config"], manifest["observed"])
+
     trace_div = _compare_traces(payload["traces"]["baseline"],
                                 payload["traces"]["candidate"])
 
     base_o, cand_o = payload["outcomes"]["baseline"], payload["outcomes"]["candidate"]
     divergence = _compare_outcomes(base_o, cand_o)
 
-    has_drift = bool(drift)
+    has_drift = bool(drift) or any(manifest_capture_drift.values())
     has_divergence = bool(trace_div) or bool(divergence)
     if has_drift and has_divergence:
         verdict = "drift_and_divergence"
@@ -560,7 +579,9 @@ def diff_runs(payload, ctx: RunContext) -> dict:
     ctx.metric("audit.drift", len(drift))
     ctx.metric("audit.trace_divergence", len(trace_div))
     ctx.metric("audit.divergence", len(divergence))
-    return {**payload, "drift": drift, "trace_divergence": trace_div,
+    ctx.metric("audit.capture_drift", sum(len(v) for v in manifest_capture_drift.values()))
+    return {**payload, "drift": drift, "manifest_capture_drift": manifest_capture_drift,
+            "trace_divergence": trace_div,
             "divergence": divergence, "verdict": verdict}
 
 
@@ -932,6 +953,22 @@ def render_report(payload, ctx: RunContext) -> dict:
     if not payload["drift"]:
         lines.append("- none")
 
+    lines.extend(["", "## Declared vs captured (session start)"])
+    capture = payload.get("manifest_capture_drift") or {}
+    if not any(capture.values()):
+        lines.append("- none (no observed snapshots recorded)")
+    else:
+        for label in ("baseline", "candidate"):
+            items = capture.get(label) or []
+            if not items:
+                continue
+            lines.append(f"- {label}:")
+            for item in items:
+                lines.append(
+                    f"    [{_severity(item['field'])}] {item['field']}:"
+                    f" declared {_compact(item['expected'])}"
+                    f" -> captured {_compact(item['observed'])}")
+
     lines.extend(["", "## Trace divergence (behavior)"])
     for label in ("baseline", "candidate"):
         h = payload["trace_health"][label]
@@ -980,6 +1017,7 @@ def render_report(payload, ctx: RunContext) -> dict:
         "readiness_gate": payload["readiness_gate"],
         "readiness": payload["readiness"],
         "drift": payload["drift"],
+        "manifest_capture_drift": payload.get("manifest_capture_drift", {}),
         "trace_health": payload["trace_health"],
         "trace_divergence": payload["trace_divergence"],
         "divergence": payload["divergence"],

@@ -101,6 +101,7 @@ _BUILTIN_MIDDLEWARE = {
     "retry": "throughline.modules.retry:Retry",
     "cache": "throughline.modules.cache:Cache",
     "quota": "throughline.modules.quota:Quota",
+    "manifest_gate": "throughline.modules.manifest_gate:ManifestGate",
     "policy": "throughline.modules.policy:Policy",
 }
 

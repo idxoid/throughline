@@ -79,7 +79,7 @@ scope = "final"
 on_fail = "raise"
 [middleware.validate.schema]
 type = "object"
-required = ["verdict", "readiness_gate", "readiness", "drift", "trace_health", "trace_divergence", "divergence", "outcomes", "decisions", "report"]
+required = ["verdict", "readiness_gate", "readiness", "drift", "manifest_capture_drift", "trace_health", "trace_divergence", "divergence", "outcomes", "decisions", "report"]
 [middleware.validate.schema.properties.readiness_gate]
 type = "string"
 enum = ["pass", "warn", "block"]
