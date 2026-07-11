@@ -1,0 +1,68 @@
+{
+  "title": "Codex diverged runs — agent-audit demo",
+  "date": "2026-07-10",
+  "throughline_commit": "9dc99b3",
+  "pair": {
+    "task": "Diagnose how to split context_engine/main.py in surgical_context",
+    "baseline_session": "019efb59-6e4b-71b2-b53a-b434930d82ce",
+    "candidate_session": "019efb5f-815f-7212-aabc-1b6bc0e22cf5",
+    "baseline_events": 71,
+    "candidate_events": 44,
+    "baseline_tools": 32,
+    "candidate_tools": 19,
+    "data": "examples/data/agent_sessions/codex-diverged/",
+    "workflow": "examples/audit_diverged_runs.py"
+  },
+  "duration_s": 0.05,
+  "verdict": "execution_divergence",
+  "readiness_gate": "pass",
+  "config_drift": [],
+  "trace_health": {
+    "baseline": {
+      "pairing_quality": "exact",
+      "trace_completeness": "complete",
+      "unresolved_calls": 0,
+      "orphan_results": 0,
+      "duplicate_call_ids": 0
+    },
+    "candidate": {
+      "pairing_quality": "exact",
+      "trace_completeness": "complete",
+      "unresolved_calls": 0,
+      "orphan_results": 0,
+      "duplicate_call_ids": 0
+    }
+  },
+  "trace_divergence_counts": {
+    "first_divergence": 1,
+    "args_changed": 19,
+    "calls_missing": 1
+  },
+  "first_divergence": {
+    "event": 1,
+    "reason": "args_changed",
+    "severity": "high",
+    "baseline_cmd": "graphify --help | tee /tmp/token_compare_op01.txt; printf '\\\\nRESULT_CHARS='; wc -m < /tm…",
+    "candidate_cmd": "rg --files context_engine/api/routes context_engine | sort | sed -n '1,220p'"
+  },
+  "outcome_divergence": [],
+  "outcomes": {
+    "baseline": {
+      "status": "ok",
+      "total_tokens": 1182694,
+      "input_tokens": 1170700,
+      "output_tokens": 11994
+    },
+    "candidate": {
+      "status": "ok",
+      "total_tokens": 812985,
+      "input_tokens": 803137,
+      "output_tokens": 9848
+    }
+  },
+  "decisions_counts": {
+    "baseline": 0,
+    "candidate": 0
+  },
+  "report_excerpt": "# Agent run audit: 019efb59-6e4b-71b2-b53a-b434930d82ce vs 019efb5f-815f-7212-aabc-1b6bc0e22cf5\n\nReadiness gate: pass (post-hoc assessment of the candidate environment; not live preflight)\nVerdict: execution_divergence\n\n## Environment readiness (assessment)\n- baseline: can_start=yes\n    (no blockers or warnings)\n- candidate: can_start=yes\n    (no blockers or warnings)\n\n## Config drift (cause)\n- none\n\n## Declared vs captured (session start)\n- none (no observed snapshots recorded)\n\n## Trace divergence (behavior)\nTrace health (baseline): pairing=exact, completeness=complete (unresolved=0, orphan_results=0, duplicate_call_ids=0)\nTrace health (candidate): pairing=exact, completeness=complete (unresolved=0, orphan_results=0, duplicate_call_ids=0)\n- [high] first behavioral divergence at event 1 (args_changed):\n    baseline:  L4 exec(const r = await tools.exec_command({cmd:\"graphify --help | …) -> ok: \"[{'type': 'input_text', 'text': 'Script completed\\nWall tim…\""
+}

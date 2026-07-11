@@ -353,6 +353,30 @@ class PresetTests(unittest.TestCase):
         self.assertNotIn("sk-live", json.dumps(blame))
         self.assertIn("report", {entry["step"] for entry in blame})
 
+    def test_example_codex_diverged_runs_demo(self):
+        """Real Codex pair: same task, execution_divergence at tool event 1."""
+        base = Path("examples/data/agent_sessions/codex-diverged/baseline.jsonl")
+        cand = Path("examples/data/agent_sessions/codex-diverged/candidate.jsonl")
+        if not base.is_file() or not cand.is_file():
+            self.skipTest("codex-diverged demo data missing")
+        flow = load_preset("examples/presets/agent-audit.toml")
+        result = flow.run({"baseline": str(base), "candidate": str(cand)})
+        out = result.output
+        self.assertEqual(out["verdict"], "execution_divergence")
+        self.assertEqual(out["readiness_gate"], "pass")
+        self.assertEqual(out["drift"], [])
+        self.assertNotIn("sessions", out)
+        self.assertEqual(out["trace_health"]["baseline"]["pairing_quality"], "exact")
+        self.assertEqual(out["trace_health"]["candidate"]["pairing_quality"], "exact")
+        self.assertEqual(out["trace_health"]["baseline"]["trace_completeness"],
+                         "complete")
+        first = out["trace_divergence"][0]
+        self.assertEqual(first["kind"], "first_divergence")
+        self.assertEqual(first["event"], 1)
+        self.assertEqual(first["reason"], "args_changed")
+        kinds = {item["kind"] for item in out["trace_divergence"]}
+        self.assertIn("calls_missing", kinds)
+
     def test_example_agent_audit_trace_classifier(self):
         """Gap shapes the bundled fixtures don't exercise: reorder,
         changed arguments, missing call, and the all-clear."""

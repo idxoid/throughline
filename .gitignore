@@ -19,3 +19,4 @@ venv/
 *.jsonl
 # ...but bundled example fixtures are source, not debris
 !examples/data/agent_sessions/*.jsonl
+!examples/data/agent_sessions/**/*.jsonl

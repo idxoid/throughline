@@ -734,6 +734,19 @@ skip verification). See `examples/presets/agent-preflight.toml` and
 snapshot lives in
 [`examples/artifacts/harness-workflow-verification.canvas.tsx`](examples/artifacts/harness-workflow-verification.canvas.tsx).
 
+**Diverged-run demo** (two real Codex sessions, same task →
+`execution_divergence` at tool event 1):
+
+```bash
+PYTHONPATH=src:. THROUGHLINE_PRESETS=examples/presets \
+  python3 examples/audit_diverged_runs.py
+```
+
+Neutral transcripts live in
+[`examples/data/agent_sessions/codex-diverged/`](examples/data/agent_sessions/codex-diverged/);
+snapshot report in
+[`examples/artifacts/codex-diverged-audit.md`](examples/artifacts/codex-diverged-audit.md).
+
 ## Development
 
 ```console
