@@ -52,6 +52,28 @@ class TranscriptAdapterTests(unittest.TestCase):
         self.assertEqual(end["type"], "session_end")
         self.assertEqual(end["usage"]["input_tokens"], 10)
 
+    def test_detect_and_convert_codex_rollout(self):
+        raw = read_jsonl(_TRANSCRIPTS / "codex_rollout_sample.jsonl")
+        self.assertEqual(detect_format(raw), "codex")
+        events = convert_events(raw)
+        self.assertEqual(events[0]["session_id"], "019e74e8-rollout-demo")
+        self.assertEqual(events[0]["config"]["harness"]["version"], "0.133.0-alpha.1")
+        self.assertEqual(events[0]["config"]["model"]["id"], "gpt-5.5")
+        self.assertEqual(events[0]["config"]["model"]["reasoning_effort"], "xhigh")
+        types = [e["type"] for e in events]
+        self.assertEqual(types[0], "session_start")
+        self.assertIn("user", types)
+        self.assertIn("assistant", types)
+        calls = [e for e in events if e["type"] == "tool_call"]
+        results = [e for e in events if e["type"] == "tool_result"]
+        self.assertEqual({c["name"] for c in calls}, {"exec_command", "apply_patch"})
+        self.assertEqual(calls[0]["args"]["cmd"], "sed -n '1,20p' README.md")
+        self.assertEqual({r["call_id"] for r in results}, {"call_demo_1", "call_demo_2"})
+        end = events[-1]
+        self.assertEqual(end["type"], "session_end")
+        self.assertEqual(end["usage"]["input_tokens"], 100)
+        self.assertEqual(end["usage"]["output_tokens"], 20)
+
     def test_convert_file_writes_jsonl(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "out.jsonl"

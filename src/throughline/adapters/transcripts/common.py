@@ -59,7 +59,7 @@ def text_blocks(content: Any) -> str:
             continue
         if not isinstance(block, Mapping):
             continue
-        if block.get("type") == "text" and block.get("text"):
+        if block.get("type") in ("text", "input_text", "output_text") and block.get("text"):
             parts.append(str(block["text"]))
     return "\n".join(parts).strip()
 

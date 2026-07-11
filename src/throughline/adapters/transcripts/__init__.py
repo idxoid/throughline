@@ -31,6 +31,8 @@ def detect_format(raw: list[dict[str, Any]]) -> FormatName:
 
     if types & {"thread.started", "turn.started", "item.completed", "item.started"}:
         return "codex"
+    if types & {"session_meta", "response_item", "turn_context"}:
+        return "codex"
     if types & {"queue-operation", "file-history-snapshot", "ai-title"}:
         return "claude-code"
     if any(row.get("sessionId") and row.get("type") in {"user", "assistant", "system"}
