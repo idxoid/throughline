@@ -32,8 +32,8 @@ Three layers, deliberately separate:
   diff is itself a finding: identical behavior clears the run even when the
   manifests drifted. The **path** side.
 - **outcome fingerprint**: what the run actually *did*, across dimensions —
-  status is only one. Also: which files it touched (and whether any were
-  test files, i.e. tests bent to pass), risky tool calls, parsed test
+  status is only one. Also: which files it touched (including test files),
+  risky tool calls, parsed test
   results, and token spend. A run can be ``status=ok`` and still diverge on
   every other dimension. The diff over fingerprints is symmetric — a
   vanished risky call, a shrunken test suite, or a big token drop is still
@@ -45,7 +45,7 @@ classed as **plan / decision / assumption / action**. Stage 1 is a
 deterministic marker table (auditable, replayable); stage 2 is the optional
 ``@semantic`` preset slot — filled here with a cheap cue heuristic so the
 example runs offline, pointed at an LLM extractor in a real deployment —
-which may only add what the markers missed, never override them. Every item
+which may add classes the markers missed, never override or remove them. Every item
 keeps its evidence: the cue that fired, the sentence quote, and the quote's
 char span at its transcript line.
 
@@ -110,8 +110,15 @@ SEMANTIC_CUES = (
 )
 SECRET_RE = re.compile(r"\b(?:sk|key|token)-[A-Za-z0-9-]{8,}\b")
 TEST_PATH_RE = re.compile(r"(^|/)tests?/|(^|/)test_|_test\.")
-TESTS_RE = re.compile(r"(\d+)\s+passed|(\d+)\s+failed")
+TESTS_RE = re.compile(
+    r"(\d+)\s+passed|(\d+)\s+failed|(\d+)\s+(?:skipped|xfailed)")
+# Strip timing/noise from tool output before result hashing — otherwise
+# "4 passed in 1.31s" and "4 passed in 1.52s" look like divergent behavior.
+PYTEST_ELAPSED_RE = re.compile(r"\bin\s+\d[\d.]*s\b")
+HTTP_TIMING_RE = re.compile(r"time=\d[\d.]*|<\s*\d[\d.]*")
 EDIT_TOOLS = {"Edit", "Write", "Create"}
+FILESYSTEM_TOOLS = frozenset({"Read", "Write", "Edit", "Create", "Grep", "Glob",
+                              "ListDir"})
 TOKEN_BLOWUP = 1.5  # token-ratio flag threshold, either direction (x or 1/x)
 
 # Bash substrings that make a tool call risky, with the risk label.
@@ -143,8 +150,10 @@ SEVERITY = {
     "harness": "medium",
     "runtime": "medium",
     "repository": "medium",
+    "repository.dirty": "high",       # same commit, dirty tree -> WOM drift
     "execution": "medium",
-    "workspace": "low",             # intended code changes live here
+    "workspace": "low",               # output artifacts; not input snapshot
+    "workspace.merkle_root": "high",  # source snapshot must match for replay
 }
 
 # Severity per trace-divergence kind. Reorders rank low: parallel tool
@@ -199,19 +208,29 @@ def build_manifests(payload, ctx: RunContext) -> dict:
 
 
 def assess_outcomes(payload, ctx: RunContext) -> dict:
-    """Multidimensional outcome fingerprint per session — status is one axis."""
+    """Multidimensional outcome fingerprint per session — status is one axis.
+    Besides the counts, tracks HOW a failing test run turned green: if only
+    test files were edited between the red run and the green one, the fix
+    lived entirely in the tests (``test_only_fix``), the strongest
+    transcript-observable bend signal."""
     outcomes = {}
     for label, events in payload["sessions"].items():
         end = next((e for e in events if e["type"] == "session_end"), {})
         usage = end.get("usage", {})
         files, tests_touched, risky = [], [], []
-        tests = {"passed": 0, "failed": 0}
+        tests = {"passed": 0, "failed": 0, "skipped": 0}
+        red = False  # a failing test run not yet followed by a green one
+        red_test_edits = red_source_edits = 0
+        test_only_fix = False
         for event in events:
             if event["type"] == "tool_call" and event["name"] in EDIT_TOOLS:
                 path = event.get("args", {}).get("file_path", "")
                 files.append(path)
                 if TEST_PATH_RE.search(path):
                     tests_touched.append(path)
+                    red_test_edits += 1 if red else 0
+                else:
+                    red_source_edits += 1 if red else 0
             elif event["type"] == "tool_call" and event["name"] == "Bash":
                 command = event.get("args", {}).get("command", "")
                 for needle, risk in RISKY_PATTERNS:
@@ -221,12 +240,21 @@ def assess_outcomes(payload, ctx: RunContext) -> dict:
             elif event["type"] == "tool_result":
                 matches = TESTS_RE.findall(event.get("text", ""))
                 if matches:  # last test-bearing result wins (re-runs overwrite)
-                    tests = {"passed": 0, "failed": 0}
-                    for passed, failed in matches:
+                    tests = {"passed": 0, "failed": 0, "skipped": 0}
+                    for passed, failed, skipped in matches:
                         if passed:
                             tests["passed"] = int(passed)
                         if failed:
                             tests["failed"] = int(failed)
+                        if skipped:
+                            tests["skipped"] = int(skipped)
+                    if tests["failed"]:
+                        red = True
+                        red_test_edits = red_source_edits = 0
+                    elif red:
+                        if red_test_edits and not red_source_edits:
+                            test_only_fix = True
+                        red = False
         total = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
         outcomes[label] = {
             "status": end.get("status", "unknown"),
@@ -234,6 +262,7 @@ def assess_outcomes(payload, ctx: RunContext) -> dict:
             "test_files_touched": sorted(set(tests_touched)),
             "risky_calls": risky,
             "tests": tests,
+            "test_only_fix": test_only_fix,
             "usage": {**usage, "total_tokens": total},
         }
         ctx.metric("llm.input_tokens", usage.get("input_tokens", 0))
@@ -294,7 +323,8 @@ def _build_trace(events: list[dict]) -> tuple[list[dict[str, Any]], str]:
                 inferred = inferred or call is not None
             if call is not None and call["status"] == "no_result":
                 call["status"] = event.get("status", "ok")
-                call["result_hash"] = _hash(event.get("text", ""))
+                call["result_hash"] = _result_hash(
+                    call["tool"], call["args"], event.get("text", ""))
                 # longer than any render width, so truncation shows "…"
                 call["result_head"] = event.get("text", "")[:80]
                 call["duration_ms"] = event.get("duration_ms")
@@ -304,10 +334,10 @@ def _build_trace(events: list[dict]) -> tuple[list[dict[str, Any]], str]:
 def extract_decisions(semantic=None):
     """Factory for the decisions step (the ``@semantic`` slot arrives here).
 
-    Stage 1 tags sentences with deterministic markers; stage 2 hands only
-    the sentences stage 1 left untagged to the optional ``semantic``
-    extractor — it can add, never override, so the auditable core stays
-    replayable. Every item keeps its evidence: the cue that fired, the
+    Stage 1 tags sentences with deterministic markers; stage 2 runs the
+    optional ``semantic`` extractor on every sentence — it can add classes
+    the markers missed, never override or remove them, so the auditable core
+    stays replayable. Every item keeps its evidence: the cue that fired, the
     sentence quote, and the quote's char span at its transcript line.
     """
     def step(payload, ctx: RunContext) -> dict:
@@ -338,21 +368,21 @@ def heuristic_semantics(sentence: str) -> tuple[str, str] | None:
 def _classify_message(text: str, line_no: int, semantic) -> list[dict[str, Any]]:
     found = []
     for start, end, sentence in _sentences(text):
-        item = None
+        marker_cls = None
         for cls, pattern in MARKER_RULES:
             match = pattern.search(sentence)
             if match:
-                item = _item(line_no, cls, "marker", "high",
-                             match.group(0), (start, end), sentence)
+                marker_cls = cls
+                found.append(_item(line_no, cls, "marker", "high",
+                                   match.group(0), (start, end), sentence))
                 break
-        if item is None and semantic is not None:
+        if semantic is not None:
             verdict = semantic(sentence)
             if verdict:
                 cls, cue = verdict
-                item = _item(line_no, cls, "semantic", "medium",
-                             cue, (start, end), sentence)
-        if item:
-            found.append(item)
+                if cls != marker_cls:
+                    found.append(_item(line_no, cls, "semantic", "medium",
+                                       cue, (start, end), sentence))
     return found
 
 
@@ -438,19 +468,27 @@ def _compare_outcomes(base: dict, cand: dict) -> list[dict[str, Any]]:
               else "medium",
               baseline=base["tests"], candidate=cand["tests"])
 
-    # Green *and* test files edited is the pass-by-shortcut smell — on either
-    # side: in the candidate it is the suspect, in the baseline it undermines
-    # the reference the candidate is judged against.
-    base_bent = bool(base["test_files_touched"]) and base["tests"]["failed"] == 0
-    cand_bent = bool(cand["test_files_touched"]) and cand["tests"]["failed"] == 0
-    if base_bent != cand_bent:
-        entry("test_integrity",
-              "regression" if cand_bent else "improvement", "high",
+    # Test-file edits are a neutral surface change; integrity violations need
+    # corroborating signals (tests-only session, skipped/xfailed, suite shrink).
+    if set(base["test_files_touched"]) != set(cand["test_files_touched"]):
+        entry("test_surface_changed", "neutral", "low",
               baseline=base["test_files_touched"],
-              candidate=cand["test_files_touched"],
-              note=("tests pass after editing test files" if cand_bent
-                    else "baseline went green after editing test files;"
-                         " the candidate did not"))
+              candidate=cand["test_files_touched"])
+
+    integrity_signals = _integrity_violation_signals(base, cand)
+    if integrity_signals:
+        cand_hits = [s for s in integrity_signals if s.startswith("candidate:")]
+        base_hits = [s for s in integrity_signals if s.startswith("baseline:")]
+        if cand_hits and not base_hits:
+            assessment = "regression"
+        elif base_hits and not cand_hits:
+            assessment = "improvement"
+        else:
+            assessment = "neutral"
+        entry("test_integrity_violation", assessment, "high",
+              signals=integrity_signals,
+              baseline=base["test_files_touched"],
+              candidate=cand["test_files_touched"])
 
     base_risky = {(c["risk"], c["command"]) for c in base["risky_calls"]}
     cand_risky = {(c["risk"], c["command"]) for c in cand["risky_calls"]}
@@ -474,6 +512,45 @@ def _compare_outcomes(base: dict, cand: dict) -> list[dict[str, Any]]:
               baseline=base["usage"]["total_tokens"],
               candidate=cand["usage"]["total_tokens"], ratio=ratio)
     return out
+
+
+def _integrity_violation_signals(base: dict, cand: dict) -> list[str]:
+    """Signals that justify ``test_integrity_violation`` beyond a surface edit.
+
+    Touching tests while green is not enough — new tests for a changed API,
+    fixed assertions, and updated fixtures are all legitimate. Flag only when
+    transcript-observable evidence points at bending or weakening the suite.
+    """
+    signals: list[str] = []
+
+    def scan(outcome: dict, prefix: str) -> None:
+        test_files = set(outcome["test_files_touched"])
+        source_files = set(outcome["files_touched"]) - test_files
+        tests = outcome["tests"]
+        if test_files and not source_files and tests["failed"] == 0:
+            signals.append(f"{prefix}:tests_only_no_source")
+        if outcome.get("test_only_fix"):
+            signals.append(f"{prefix}:test_only_fix_after_failure")
+        skipped = tests.get("skipped", 0)
+        if skipped:
+            signals.append(f"{prefix}:tests_skipped_or_xfailed")
+
+    scan(base, "baseline")
+    scan(cand, "candidate")
+
+    base_suite = base["tests"]["passed"] + base["tests"]["failed"]
+    cand_suite = cand["tests"]["passed"] + cand["tests"]["failed"]
+    if cand["tests"]["failed"] == 0 and cand_suite < base_suite:
+        signals.append("candidate:suite_shrunk_while_green")
+    if cand["tests"].get("skipped", 0) > base["tests"].get("skipped", 0):
+        signals.append("candidate:skipped_increased")
+
+    # A red-to-green path that touched only tests is suspicious only when the
+    # whole session also avoided source — otherwise it may be API/test sync.
+    signals = [s for s in signals
+               if s != "candidate:test_only_fix_after_failure"
+               or "candidate:tests_only_no_source" in signals]
+    return sorted(set(signals))
 
 
 def _assess_tests(base: dict, cand: dict) -> str:
@@ -616,6 +693,42 @@ def _pair_arg_changes(ops: list) -> list:
 
 def _sig(entry: dict) -> tuple[str, str]:
     return entry["tool"], entry["args_hash"]
+
+
+def pytest_result_normalizer(text: str) -> str:
+    return " ".join(PYTEST_ELAPSED_RE.sub("", text).split())
+
+
+def filesystem_result_normalizer(text: str) -> str:
+    return text.strip()
+
+
+def http_result_normalizer(text: str) -> str:
+    return " ".join(HTTP_TIMING_RE.sub("", text).split())
+
+
+def git_result_normalizer(text: str) -> str:
+    return text.strip()
+
+
+def _result_normalizer(tool: str, args: dict):
+    if tool == "Bash":
+        command = args.get("command", "")
+        if re.search(r"\bpytest\b|\bpy\.test\b", command):
+            return pytest_result_normalizer
+        if re.search(r"(^|\s|/)git\s", command):
+            return git_result_normalizer
+        if re.search(r"\bcurl\b|\bwget\b", command):
+            return http_result_normalizer
+    elif tool in FILESYSTEM_TOOLS:
+        return filesystem_result_normalizer
+    return None
+
+
+def _result_hash(tool: str, args: dict, text: str) -> str:
+    normalize = _result_normalizer(tool, args)
+    body = normalize(text) if normalize else text.strip()
+    return _hash(body)
 
 
 def _hash(value: Any) -> str:
@@ -776,8 +889,12 @@ def _render_divergence(item: dict[str, Any]) -> str:
         base, cand = item["baseline"], item["candidate"]
         return (f"{base['passed']}p/{base['failed']}f ->"
                 f" {cand['passed']}p/{cand['failed']}f")
-    if dim == "test_integrity":
-        return f"{item['note']}: {item['candidate'] or item['baseline']}"
+    if dim == "test_surface_changed":
+        return (f"{item['baseline'] or '(none)'} ->"
+                f" {item['candidate'] or '(none)'}")
+    if dim == "test_integrity_violation":
+        return (f"{', '.join(item['signals'])}:"
+                f" {item['candidate'] or item['baseline']}")
     if dim == "risky_calls_added":
         return "; ".join(f"{c['risk']}: {c['command']}" for c in item["added"])
     if dim == "risky_calls_removed":

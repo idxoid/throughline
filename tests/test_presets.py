@@ -237,7 +237,8 @@ class PresetTests(unittest.TestCase):
              "workspace.merkle_root"})
         self.assertEqual(drift["model.temperature"]["severity"], "high")
         self.assertEqual(drift["model.release"]["severity"], "medium")
-        self.assertEqual(drift["workspace.merkle_root"]["severity"], "low")
+        self.assertEqual(drift["repository.dirty"]["severity"], "high")
+        self.assertEqual(drift["workspace.merkle_root"]["severity"], "high")
         # an added MCP server is one drift entry, not one per attribute
         self.assertIsNone(drift["mcp.lint"]["baseline"])
         self.assertEqual(drift["mcp.lint"]["candidate"]["command"], "mcp-lint")
@@ -252,10 +253,11 @@ class PresetTests(unittest.TestCase):
         self.assertNotIn("status", divergence)  # both green: status did NOT diverge
         self.assertEqual(
             set(divergence),
-            {"files_added", "test_integrity", "risky_calls_added", "tokens_ratio"})
-        self.assertEqual(divergence["test_integrity"]["severity"], "high")
-        self.assertEqual(divergence["test_integrity"]["assessment"], "regression")
-        self.assertIn("tests/test_client.py", divergence["test_integrity"]["candidate"])
+            {"files_added", "test_surface_changed", "risky_calls_added", "tokens_ratio"})
+        self.assertEqual(divergence["test_surface_changed"]["severity"], "low")
+        self.assertEqual(divergence["test_surface_changed"]["assessment"], "neutral")
+        self.assertIn("tests/test_client.py", divergence["test_surface_changed"]["candidate"])
+        self.assertNotIn("test_integrity_violation", divergence)
         self.assertEqual(divergence["risky_calls_added"]["added"][0]["risk"],
                          "pipe-to-shell")
         self.assertEqual(divergence["risky_calls_added"]["assessment"], "regression")
@@ -294,8 +296,8 @@ class PresetTests(unittest.TestCase):
                       result.output["report"])
         self.assertEqual(result.metrics["counters"]["audit.tool_calls"], 8)
 
-        # decisions: classed sentences with evidence; deterministic markers
-        # first, the @semantic stage only adds what the markers missed
+        # decisions: classed sentences with evidence; markers first, semantic
+        # adds classes the markers missed (never overrides)
         base_d = result.output["decisions"]["baseline"]
         self.assertEqual([d["class"] for d in base_d], ["action"])
         cand_d = result.output["decisions"]["candidate"]
@@ -340,12 +342,13 @@ class PresetTests(unittest.TestCase):
     def test_example_agent_audit_trace_classifier(self):
         """Gap shapes the bundled fixtures don't exercise: reorder,
         changed arguments, missing call, and the all-clear."""
-        from examples.agent_audit import _compare_traces, _hash
+        from examples.agent_audit import _compare_traces, _hash, _result_hash
 
         def call(event, tool, args, status="ok", result=None):
             return {"event": event, "line": event, "tool": tool, "args": args,
                     "args_hash": _hash(args), "status": status,
-                    "result_hash": _hash(result) if result is not None else None,
+                    "result_hash": (_result_hash(tool, args, result)
+                                    if result is not None else None),
                     "result_head": (result or "")[:60], "duration_ms": None}
 
         def read(event):
@@ -433,11 +436,14 @@ class PresetTests(unittest.TestCase):
         from examples.agent_audit import _compare_outcomes
 
         def outcome(status="ok", files=(), test_files=(), risky=(),
-                    passed=4, failed=0, tokens=1000):
+                    passed=4, failed=0, skipped=0, tokens=1000,
+                    test_only_fix=False):
             return {"status": status, "files_touched": sorted(files),
                     "test_files_touched": sorted(test_files),
                     "risky_calls": list(risky),
-                    "tests": {"passed": passed, "failed": failed},
+                    "tests": {"passed": passed, "failed": failed,
+                              "skipped": skipped},
+                    "test_only_fix": test_only_fix,
                     "usage": {"total_tokens": tokens}}
 
         # candidate did LESS: fewer files, the risky call vanished, tokens
@@ -450,22 +456,45 @@ class PresetTests(unittest.TestCase):
         diff = {d["dimension"]: d for d in _compare_outcomes(base, cand)}
         self.assertEqual(
             set(diff),
-            {"files_removed", "test_integrity", "risky_calls_removed",
+            {"files_removed", "test_surface_changed", "risky_calls_removed",
              "tokens_ratio"})
         self.assertEqual(diff["files_removed"]["removed"], ["b.py"])
         self.assertEqual(diff["files_removed"]["assessment"], "neutral")
         self.assertEqual(diff["risky_calls_removed"]["assessment"], "improvement")
-        self.assertEqual(diff["test_integrity"]["assessment"], "improvement")
-        self.assertIn("baseline went green", diff["test_integrity"]["note"])
+        self.assertEqual(diff["test_surface_changed"]["assessment"], "neutral")
+        self.assertIn("tests/t.py", diff["test_surface_changed"]["baseline"])
+        self.assertNotIn("test_integrity_violation", diff)
         self.assertEqual(diff["tokens_ratio"]["assessment"], "improvement")
         self.assertLessEqual(diff["tokens_ratio"]["ratio"], 0.34)
+
+        # tests-only green run: surface change plus integrity violation
+        diff = {d["dimension"]: d
+                for d in _compare_outcomes(outcome(),
+                                           outcome(test_files=("tests/t.py",),
+                                                   files=("tests/t.py",)))}
+        self.assertIn("test_surface_changed", diff)
+        viol = diff["test_integrity_violation"]
+        self.assertEqual(viol["severity"], "high")
+        self.assertEqual(viol["assessment"], "regression")
+        self.assertIn("candidate:tests_only_no_source", viol["signals"])
+
+        # skipped/xfailed on candidate is a violation signal
+        diff = {d["dimension"]: d
+                for d in _compare_outcomes(
+                    outcome(test_files=("tests/t.py",), files=("a.py",)),
+                    outcome(test_files=("tests/t.py",), files=("a.py",),
+                            skipped=2))}
+        self.assertIn("candidate:tests_skipped_or_xfailed",
+                      diff["test_integrity_violation"]["signals"])
 
         # 4 passed -> 2 passed with both runs green: the silent suite shrink
         diff = {d["dimension"]: d
                 for d in _compare_outcomes(outcome(passed=4), outcome(passed=2))}
-        self.assertEqual(set(diff), {"tests_changed"})
+        self.assertEqual(set(diff), {"tests_changed", "test_integrity_violation"})
         self.assertEqual(diff["tests_changed"]["assessment"], "regression")
         self.assertEqual(diff["tests_changed"]["severity"], "medium")
+        self.assertIn("candidate:suite_shrunk_while_green",
+                      diff["test_integrity_violation"]["signals"])
 
         # new failures: regression at high severity
         diff = {d["dimension"]: d
@@ -497,12 +526,12 @@ class PresetTests(unittest.TestCase):
             "Plan: refactor first, then I'll run the tests.", 1, None)
         self.assertEqual([i["class"] for i in items], ["plan"])
 
-        # a marker-tagged sentence never reaches the semantic stage
+        # marker tags action; semantic adds decision — both, not either/or
         items = _classify_message(
             "The right fix is to retry, so I'll patch the client.", 1,
             heuristic_semantics)
         self.assertEqual([(i["class"], i["source"]) for i in items],
-                         [("action", "marker")])
+                         [("action", "marker"), ("decision", "semantic")])
 
         # markers-only mode: the unmarked commitment goes unclassified...
         text = "The right fix is to update the tests."
@@ -521,6 +550,19 @@ class PresetTests(unittest.TestCase):
         for i in items:
             start, end = i["evidence"]["span"]
             self.assertEqual(text[start:end], i["evidence"]["quote"])
+
+    def test_example_agent_audit_result_normalizers(self):
+        """Pytest timing noise must not masquerade as behavioral divergence."""
+        from examples.agent_audit import _result_hash
+
+        pytest_cmd = {"command": "pytest tests/test_client.py -q"}
+        timing_a = "4 passed in 1.31s"
+        timing_b = "4 passed in 1.52s"
+        self.assertEqual(_result_hash("Bash", pytest_cmd, timing_a),
+                         _result_hash("Bash", pytest_cmd, timing_b))
+        self.assertNotEqual(_result_hash("Bash", pytest_cmd, timing_a),
+                            _result_hash("Bash", pytest_cmd,
+                                         "2 failed, 2 passed"))
 
 
 class BuildFlowUnit(unittest.TestCase):
