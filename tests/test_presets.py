@@ -432,6 +432,39 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(out[0]["kind"], "first_divergence")
         self.assertEqual(out[0]["reason"], "result_changed")
 
+    def test_trace_section_collapses_per_event_change_tail(self):
+        """Report rendering caps the args_changed wall; data stays complete."""
+        from examples.agent_audit import (TRACE_CHANGE_CAP,
+                                           _render_trace_section)
+
+        def change(event):
+            view = {"event": event, "line": event, "call": f"Bash(cmd{event})",
+                    "status": "ok", "result": ""}
+            return {"kind": "args_changed", "severity": "medium",
+                    "baseline": view, "candidate": view}
+
+        items = (
+            [{"kind": "first_divergence", "severity": "high", "event": 1,
+              "reason": "args_changed",
+              "baseline": {"line": 1, "call": "Bash(cmd1)", "status": "ok",
+                           "result": "", "duration_ms": None},
+              "candidate": {"line": 1, "call": "Bash(cmd1)", "status": "ok",
+                            "result": "", "duration_ms": None}}]
+            + [change(e) for e in range(1, 9)]  # 8 per-event changes
+            + [{"kind": "calls_missing", "severity": "medium", "side": "baseline",
+                "calls": [{"call": "Bash(pytest)"}]}]
+        )
+        rendered = "\n".join(_render_trace_section(items))
+        # first_divergence + capped changes + summary + the aggregate survive
+        self.assertIn("first behavioral divergence at event 1", rendered)
+        self.assertEqual(rendered.count("args_changed at event"), TRACE_CHANGE_CAP)
+        self.assertIn(f"{8 - TRACE_CHANGE_CAP} more per-event change(s)", rendered)
+        self.assertIn("events 4–8", rendered)
+        self.assertIn("calls_missing", rendered)  # aggregate never collapsed
+        # Below the cap: nothing collapses, no summary line.
+        few = "\n".join(_render_trace_section(items[:1] + [change(1), change(2)]))
+        self.assertNotIn("more per-event change(s)", few)
+
     def test_example_agent_audit_trace_pairing(self):
         """call_id joins beat arrival order; name inference is only a
         fallback and downgrades the whole trace to "inferred"."""

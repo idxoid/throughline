@@ -157,6 +157,12 @@ EDIT_TOOLS = {"Edit", "Write", "Create"}
 FILESYSTEM_TOOLS = frozenset({"Read", "Write", "Edit", "Create", "Grep", "Glob",
                               "ListDir"})
 TOKEN_BLOWUP = 1.5  # token-ratio flag threshold, either direction (x or 1/x)
+# Per-event trace changes to print in full before collapsing the tail into one
+# summary line. Runs that fork early emit one args_changed per aligned pair;
+# once first_divergence has flagged the fork, the rest is a wall of medium
+# noise. The full inventory stays in trace_divergence (JSON) either way.
+TRACE_CHANGE_CAP = 3
+_TRACE_CHANGE_KINDS = ("args_changed", "result_changed")
 
 # Event types whose full text is agent speech / planning (not tool I/O).
 _DECISION_FULL_TEXT_TYPES = frozenset({
@@ -1184,9 +1190,9 @@ def render_report(payload, ctx: RunContext) -> dict:
                    " calls can mis-pair results")
     if caveat:
         lines.append(caveat.strip())
-    for item in payload["trace_divergence"] or []:
-        lines.extend(_render_trace_item(item))
-    if not payload["trace_divergence"]:
+    if payload["trace_divergence"]:
+        lines.extend(_render_trace_section(payload["trace_divergence"]))
+    else:
         lines.append("- none — same tool calls, same order, same results")
 
     lines.extend(["", "## Outcome divergence (effect)"])
@@ -1226,6 +1232,47 @@ def render_report(payload, ctx: RunContext) -> dict:
         "decisions": payload["decisions"],
         "report": "\n".join(lines),
     }
+
+
+def _render_trace_section(items: list[dict[str, Any]],
+                          cap: int = TRACE_CHANGE_CAP) -> list[str]:
+    """Render the trace items, collapsing the per-event change tail.
+
+    ``first_divergence`` and the aggregate entries (``calls_missing`` /
+    ``calls_added`` / ``reordered`` / ``denied``) always print in full — they
+    are already one line each. Only the repeated per-event ``args_changed`` /
+    ``result_changed`` entries are capped: the first ``cap`` print, the rest
+    collapse into a single summary. ``_compare_traces`` orders changes before
+    the aggregates, so this preserves the natural reading order."""
+    head = [i for i in items if i["kind"] == "first_divergence"]
+    changes = [i for i in items if i["kind"] in _TRACE_CHANGE_KINDS]
+    rest = [i for i in items
+            if i["kind"] not in _TRACE_CHANGE_KINDS and i["kind"] != "first_divergence"]
+    lines: list[str] = []
+    for item in head:
+        lines.extend(_render_trace_item(item))
+    for item in changes[:cap]:
+        lines.extend(_render_trace_item(item))
+    if len(changes) > cap:
+        lines.extend(_summarize_elided_changes(changes[cap:]))
+    for item in rest:
+        lines.extend(_render_trace_item(item))
+    return lines
+
+
+def _summarize_elided_changes(elided: list[dict[str, Any]]) -> list[str]:
+    counts = Counter(item["kind"] for item in elided)
+    parts = ", ".join(f"{n} {kind}" for kind, n in sorted(counts.items()))
+    events = sorted({
+        view["event"]
+        for item in elided
+        for view in (item.get("baseline"), item.get("candidate"))
+        if view
+    })
+    span = (f"events {events[0]}–{events[-1]}" if len(events) > 1
+            else f"event {events[0]}" if events else "later events")
+    return [f"- [medium] … {len(elided)} more per-event change(s) at {span}"
+            f" ({parts}) — full inventory in trace_divergence (--json)"]
 
 
 def _render_trace_item(item: dict[str, Any]) -> list[str]:
