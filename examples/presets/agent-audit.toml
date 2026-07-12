@@ -52,6 +52,11 @@ name = "outcomes"
 uses = "examples.agent_audit:extract_traces"
 name = "traces"
 
+[[steps]]
+uses = "examples.agent_audit:assess_token_metrics"
+name = "token_metrics"
+description = "Token efficiency audit: overhead ratio (COR), pollution index (CPI), steps-to-code (STC)"
+
 # Decisions still need raw sessions; run them before drop_raw_sessions.
 [[steps]]
 uses = "examples.agent_audit:extract_decisions"
@@ -102,7 +107,7 @@ scope = "final"
 on_fail = "raise"
 [middleware.validate.schema]
 type = "object"
-required = ["verdict", "readiness_gate", "readiness", "drift", "manifest_capture_drift", "trace_health", "trace_divergence", "divergence", "outcomes", "decisions", "report"]
+required = ["verdict", "readiness_gate", "readiness", "drift", "manifest_capture_drift", "trace_health", "trace_divergence", "token_divergence", "token_metrics", "divergence", "outcomes", "decisions", "report"]
 [middleware.validate.schema.properties.readiness_gate]
 type = "string"
 enum = ["pass", "warn", "block"]

@@ -367,6 +367,84 @@ def extract_traces(payload, ctx: RunContext) -> dict:
     return {**payload, "traces": traces, "trace_health": health}
 
 
+def assess_token_metrics(payload, ctx: RunContext) -> dict:
+    """Token efficiency metrics: Context Overhead Ratio, Pollution Index, Steps-to-Code.
+
+    Measures how efficiently the agent used its token budget — ReAct pattern overhead,
+    wasted error cycles, and time to first productive code edit. Complements outcome
+    (what succeeded) and trace (what was called) with efficiency (how wasteful).
+
+    - COR: ratio of error/denied calls to successful calls. Shows wasted retries.
+    - CPI: share of error/denied results in total calls (>40% = hallucination risk).
+    - STC: how many tool calls until first successful Edit/Write (lower = injected context).
+    """
+    metrics = {}
+    for label, events in payload["sessions"].items():
+        tool_sequence = []  # (call_id, name, status)
+        assistant_reasoning_count = 0
+        first_productive_edit = None
+
+        for event in events:
+            if event["type"] == "assistant":
+                # Heuristic: assistant text with reasoning keywords = overhead
+                text = event.get("text", "").lower()
+                reasoning_keywords = ("plan", "need to", "first", "let me",
+                                     "i'll", "should", "will", "check", "instead")
+                if any(kw in text for kw in reasoning_keywords):
+                    assistant_reasoning_count += 1
+
+            elif event["type"] == "tool_call":
+                tool_sequence.append({
+                    "call_id": event.get("call_id"),
+                    "name": event.get("name"),
+                    "status": None,
+                    "idx": len(tool_sequence),
+                })
+
+            elif event["type"] == "tool_result":
+                call_id = event.get("call_id")
+                status = event.get("status")
+                # Pair result with call (last unpaired call)
+                if tool_sequence and tool_sequence[-1]["status"] is None:
+                    tool_sequence[-1]["status"] = status
+
+                # Track first successful Edit/Write
+                if status == "ok" and event.get("name") in ("Edit", "Write"):
+                    if first_productive_edit is None:
+                        first_productive_edit = len(tool_sequence)
+
+        # Calculate metrics
+        successful = sum(1 for t in tool_sequence if t["status"] == "ok")
+        errors = sum(1 for t in tool_sequence if t["status"] == "error")
+        denied = sum(1 for t in tool_sequence if t["status"] == "denied")
+        problems = errors + denied
+        total = len(tool_sequence)
+
+        # COR: overhead ratio = problems / successful calls
+        cor = problems / max(successful, 1)
+        # CPI: pollution index = problems / total calls
+        cpi = problems / max(total, 1)
+        # STC: steps to code = index of first productive edit
+        stc = first_productive_edit if first_productive_edit else total
+
+        metrics[label] = {
+            "cor": round(cor, 3),
+            "cpi": round(cpi, 3),
+            "stc": stc,
+            "total_calls": total,
+            "successful_calls": successful,
+            "error_calls": errors,
+            "denied_calls": denied,
+            "reasoning_messages": assistant_reasoning_count,
+        }
+
+        ctx.metric("audit.token_cor", metrics[label]["cor"])
+        ctx.metric("audit.token_cpi", metrics[label]["cpi"])
+        ctx.metric("audit.steps_to_code", metrics[label]["stc"])
+
+    return {**payload, "token_metrics": metrics}
+
+
 def _build_trace(events: list[dict]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Pair each tool_result with its call. The join key is ``call_id``;
     tool-name inference is only a fallback. Returns trace entries plus a
@@ -753,8 +831,64 @@ def _item(line: int, cls: str, source: str, confidence: str,
             "evidence": {"cue": cue, "span": list(span), "quote": quote}}
 
 
+def _compare_token_metrics(base: dict, cand: dict) -> list[dict[str, Any]]:
+    """Compare token efficiency between two runs.
+
+    Symmetrically detects efficiency regressions and improvements: higher COR
+    (more retries), higher CPI (more wasted cycles), or higher STC (slower to
+    first edit) all surface as behavioral divergence. A run can succeed on both
+    status and tests yet waste twice as many tokens — that matters.
+    """
+    out: list[dict[str, Any]] = []
+
+    def entry(dimension: str, assessment: str, severity: str, **extra) -> None:
+        out.append({"dimension": dimension, "assessment": assessment,
+                    "severity": severity, **extra})
+
+    # COR (Context Overhead Ratio) — lower is better; too many retries
+    if base["cor"] != cand["cor"]:
+        delta = cand["cor"] - base["cor"]
+        assessment = "regression" if delta > 0 else "improvement"
+        severity = "high" if abs(delta) > 1.0 else "medium" if abs(delta) > 0.3 else "low"
+        entry("overhead_ratio", assessment, severity,
+              baseline=base["cor"], candidate=cand["cor"], delta=round(delta, 3))
+
+    # CPI (Context Pollution Index) — lower is better; >0.4 = hallucination risk
+    if base["cpi"] != cand["cpi"]:
+        delta = cand["cpi"] - base["cpi"]
+        assessment = "regression" if delta > 0 else "improvement"
+        is_candidate_critical = cand["cpi"] > 0.4
+        is_baseline_critical = base["cpi"] > 0.4
+        if is_candidate_critical and not is_baseline_critical:
+            severity = "high"  # crossed into hallucination zone
+        else:
+            severity = "high" if is_candidate_critical else "medium" if abs(delta) > 0.1 else "low"
+        entry("pollution_index", assessment, severity,
+              baseline=base["cpi"], candidate=cand["cpi"], delta=round(delta, 3),
+              candidate_hallucination_risk=is_candidate_critical)
+
+    # STC (Steps-to-Code) — lower is better; fewer hops to first edit
+    if base["stc"] != cand["stc"]:
+        delta = cand["stc"] - base["stc"]
+        assessment = "regression" if delta > 0 else "improvement"
+        severity = "high" if delta > 3 else "medium" if delta > 1 else "low"
+        entry("steps_to_code", assessment, severity,
+              baseline=base["stc"], candidate=cand["stc"], delta=delta)
+
+    # Problem call counts (error + denied)
+    base_problems = base["error_calls"] + base["denied_calls"]
+    cand_problems = cand["error_calls"] + cand["denied_calls"]
+    if base_problems != cand_problems:
+        delta = cand_problems - base_problems
+        assessment = "regression" if delta > 0 else "improvement"
+        entry("problem_calls", assessment, "medium" if delta != 0 else "low",
+              baseline=base_problems, candidate=cand_problems, delta=delta)
+
+    return out
+
+
 def diff_runs(payload, ctx: RunContext) -> dict:
-    """Config drift (cause) + trace (path) + outcome (effect) -> verdict."""
+    """Config drift (cause) + trace (path) + outcome (effect) + efficiency -> verdict."""
     base_m, cand_m = payload["manifests"]["baseline"], payload["manifests"]["candidate"]
     drift: list[dict[str, Any]] = []
     _diff_tree(base_m["config"], cand_m["config"], "", drift)
@@ -771,8 +905,11 @@ def diff_runs(payload, ctx: RunContext) -> dict:
     base_o, cand_o = payload["outcomes"]["baseline"], payload["outcomes"]["candidate"]
     divergence = _compare_outcomes(base_o, cand_o)
 
+    token_diff = _compare_token_metrics(payload["token_metrics"]["baseline"],
+                                       payload["token_metrics"]["candidate"])
+
     has_drift = bool(drift) or any(manifest_capture_drift.values())
-    has_divergence = bool(trace_div) or bool(divergence)
+    has_divergence = bool(trace_div) or bool(divergence) or bool(token_diff)
     if has_drift and has_divergence:
         verdict = "drift_and_divergence"
     elif has_drift:
@@ -785,9 +922,11 @@ def diff_runs(payload, ctx: RunContext) -> dict:
     ctx.metric("audit.drift", len(drift))
     ctx.metric("audit.trace_divergence", len(trace_div))
     ctx.metric("audit.divergence", len(divergence))
+    ctx.metric("audit.token_divergence", len(token_diff))
     ctx.metric("audit.capture_drift", sum(len(v) for v in manifest_capture_drift.values()))
     return {**payload, "drift": drift, "manifest_capture_drift": manifest_capture_drift,
             "trace_divergence": trace_div,
+            "token_divergence": token_diff,
             "divergence": divergence, "verdict": verdict}
 
 
@@ -1202,6 +1341,21 @@ def render_report(payload, ctx: RunContext) -> dict:
     if not payload["divergence"]:
         lines.append("- none")
 
+    lines.extend(["", "## Token efficiency (efficiency)"])
+    for label in ("baseline", "candidate"):
+        metrics = payload["token_metrics"][label]
+        lines.append(
+            f"- {label}: COR={metrics['cor']} (overhead)"
+            f" | CPI={metrics['cpi']} (pollution)"
+            f" | STC={metrics['stc']} (steps to code)"
+            f" | {metrics['error_calls']}e/{metrics['denied_calls']}d errors")
+    if payload["token_divergence"]:
+        for item in payload["token_divergence"]:
+            lines.append(f"  [{item['severity']}] {item['dimension']}"
+                         f" ({item['assessment']}): {_render_divergence(item)}")
+    else:
+        lines.append("  (no efficiency divergence)")
+
     lines.extend(["", "## Decisions"])
     for label in ("baseline", "candidate"):
         for decision in payload["decisions"][label]:
@@ -1227,6 +1381,8 @@ def render_report(payload, ctx: RunContext) -> dict:
         "manifest_capture_drift": payload.get("manifest_capture_drift", {}),
         "trace_health": payload["trace_health"],
         "trace_divergence": payload["trace_divergence"],
+        "token_metrics": payload["token_metrics"],
+        "token_divergence": payload["token_divergence"],
         "divergence": payload["divergence"],
         "outcomes": outcomes,
         "decisions": payload["decisions"],
