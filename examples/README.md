@@ -181,7 +181,7 @@ The rest of `examples/` shows the control plane from other angles — run
 | [`doc-extract`](presets/doc-extract.toml) | Document extraction pipeline | parser slot, page map, retryable structured extraction |
 | [`support-agent`](presets/support-agent.toml) | Guarded support bot | intent routing, policy screening/redaction, quota fallback, audit |
 | [`agent-preflight`](presets/agent-preflight.toml) | Live agent environment gate | ManifestGate, lockfile verify, live vs harness-attested provenance |
-| [`agent-audit`](presets/agent-audit.toml) | AI-agent workflow reproducibility | run manifests ("lockfile"), config drift diff, tool-call trace alignment (call_id-paired, exact/inferred quality, first behavioral divergence), symmetric multidimensional outcome diff (change + regression/improvement assessment), two-stage classed decision extraction (markers, then optional @semantic slot) with evidence spans, recursive secret redaction (public output + blame trail) |
+| [`agent-audit`](presets/agent-audit.toml) | AI-agent workflow reproducibility | run manifests ("lockfile"), config drift diff, tool-call trace alignment (call_id-paired, exact/inferred quality, first behavioral divergence), symmetric multidimensional outcome diff (change + regression/improvement assessment), **token efficiency metrics** (COR, CPI, STC — overhead/pollution/speed), two-stage classed decision extraction (markers, then optional @semantic slot) with evidence spans, recursive secret redaction (public output + blame trail) |
 | [`surgical_context/`](surgical_context/) | Code intelligence / change impact | file:line citations, code QA, real integration |
 
 Harness integrations (library + CLI):
